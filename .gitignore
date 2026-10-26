@@ -27,7 +27,24 @@ go.work.sum
 
 # env file
 .env
+.env.*
 
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Build output
+/dist/
+/bin/
+
+# Secrets / certs
+*.pem
+*.key
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local overrides
+.claude/settings.local.json
