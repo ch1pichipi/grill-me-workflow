@@ -1,0 +1,1387 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>聊天审核演示</title>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --line: #272f3a;
+    --text: #d7dee8;
+    --muted: #8b98a9;
+    --accent: #4c9aff;
+    --danger: #f85149;
+    --warn: #d29922;
+    --ok: #3fb950;
+    --radius: 8px;
+    font-synthesis: none;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: #0f1216ee; backdrop-filter: blur(6px); z-index: 5;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .spacer { flex: 1; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot.on { background: var(--ok); }
+  .dot.off { background: var(--danger); }
+  main {
+    display: grid; gap: 12px; padding: 12px;
+    grid-template-columns: minmax(300px, 360px) minmax(340px, 1fr) minmax(380px, 1.15fr);
+    align-items: start;
+  }
+  @media (max-width: 1280px) { main { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  section.panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 12px; min-width: 0;
+  }
+  section.panel > h2 {
+    margin: 0 0 10px; font-size: 13px; font-weight: 600; color: #eef3f9;
+    display: flex; align-items: center; gap: 8px;
+  }
+  h3 { font-size: 12px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; text-transform: none; }
+  h3:first-child { margin-top: 0; }
+  label { display: block; color: var(--muted); font-size: 11px; margin: 6px 0 2px; }
+  input[type="text"], input[type="number"], textarea, select {
+    width: 100%; background: #0c1015; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px;
+    font: inherit; font-size: 12px;
+  }
+  textarea { resize: vertical; min-height: 54px; }
+  input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  button {
+    background: #222b36; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button.danger { border-color: #6b2b2b; color: #ff9c96; }
+  button.small { padding: 2px 7px; font-size: 11px; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row.wrap { flex-wrap: wrap; }
+  .row > .grow { flex: 1; min-width: 0; }
+  .mono { font-family: ui-monospace, Consolas, "Cascadia Mono", monospace; }
+  .muted { color: var(--muted); }
+  .tiny { font-size: 11px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 6px; border-radius: 999px; font-size: 11px;
+    border: 1px solid var(--line); background: #10161d; color: var(--muted);
+  }
+  .pill.sev-1 { border-color: #2d4b33; color: #7ee787; }
+  .pill.sev-2 { border-color: #4b4b2d; color: #e3e37e; }
+  .pill.sev-3 { border-color: #5a4425; color: #f0b46b; }
+  .pill.sev-4 { border-color: #5f2f2c; color: #ff9c96; }
+  .pill.sev-5 { border-color: #7a2320; color: #ff7b72; }
+  .pill.ok { border-color: #2d4b33; color: #7ee787; }
+  .pill.bad { border-color: #6b2b2b; color: #ff9c96; }
+  .pill.info { border-color: #24425f; color: #79c0ff; }
+  .mute-banner {
+    margin-top: 8px; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid #6b2b2b; background: #2a1517; color: #ffb3ae;
+  }
+  .mute-banner.clear { border-color: #2d4b33; background: #10251a; color: #7ee787; }
+  #chat-input { min-height: 64px; }
+  .list { max-height: 420px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+  .entry { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--panel-2); }
+  .entry.rejected { border-color: #6b2b2b; background: #241517; }
+  .entry.lift { border-color: #24425f; background: #121c26; }
+  .entry .who { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .entry .who b { font-weight: 600; }
+  .entry .msg { margin: 5px 0; white-space: pre-wrap; word-break: break-word; }
+  .entry .meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--panel-2); margin-bottom: 8px; }
+  .card.bad { border-color: #6b2b2b; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  details { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; background: #12181f; }
+  summary { cursor: pointer; font-size: 12px; color: #cfd8e3; }
+  #toast {
+    position: fixed; right: 16px; bottom: 16px; z-index: 20;
+    display: flex; flex-direction: column; gap: 6px; align-items: flex-end; pointer-events: none;
+  }
+  #toast div {
+    background: #22303f; border: 1px solid #35506b; color: #e6edf3;
+    padding: 7px 11px; border-radius: 6px; font-size: 12px; max-width: 380px;
+    box-shadow: 0 6px 18px #0008;
+  }
+  #toast div.bad { background: #3a1d1f; border-color: #7a2c2c; }
+  .empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+  .rule-line { display: flex; gap: 6px; align-items: baseline; }
+  .rule-line .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rule-off { opacity: .5; }
+  .chk { display: inline-flex; gap: 5px; align-items: center; color: var(--text); font-size: 12px; margin: 0; }
+  .chk input { width: auto; }
+  .samples { font-size: 11px; color: var(--muted); }
+  .hit-list { display: flex; gap: 5px; flex-wrap: wrap; }
+  tr.current td { background: #1b2734; }
+  td .pill { white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>聊天审核演示</h1>
+  <span id="conn" class="tiny muted"><span class="dot off"></span>未连接</span>
+  <span class="spacer"></span>
+  <span id="agent-state" class="tiny muted"></span>
+</header>
+
+<main>
+  <!-- 1. 玩家区 -->
+  <section class="panel">
+    <h2>玩家</h2>
+    <label for="player-select">当前玩家（发消息归属）</label>
+    <select id="player-select"></select>
+    <div class="row wrap" style="margin-top:6px">
+      <input id="new-player-name" class="grow" type="text" placeholder="新玩家名字" maxlength="40">
+      <button id="create-player" class="primary">创建</button>
+      <button id="rename-player">改名</button>
+      <button id="delete-player" class="danger">删除</button>
+    </div>
+
+    <div id="mute-status" class="mute-banner clear" style="display:none"></div>
+    <div id="player-counts" class="tiny muted" style="margin-top:6px"></div>
+
+    <h3>玩家列表</h3>
+    <div id="player-table"></div>
+
+    <h3>发消息</h3>
+    <textarea id="chat-input" placeholder="Ctrl+Enter 发送"></textarea>
+    <div class="row" style="margin-top:6px">
+      <span class="tiny muted grow">消息原文上限 2000 字，超出截断</span>
+      <button id="send-btn" class="primary">发送</button>
+    </div>
+
+    <h3>管理员操作</h3>
+    <div class="row">
+      <button id="lift-btn">提前解除当前玩家的禁言</button>
+    </div>
+    <p class="tiny muted" style="margin:6px 0 0">提前解除必须填写原因，原因会出现在全局流里。</p>
+
+    <h3>最近一次判定</h3>
+    <div id="last-result" class="empty">还没有发过消息</div>
+
+    <h3>当前阶梯（只读，来自后端）</h3>
+    <table id="stair-table"></table>
+    <p id="stair-formula" class="tiny muted" style="margin:6px 0 0"></p>
+  </section>
+
+  <!-- 2. 管理员 · 全局流 -->
+  <section class="panel">
+    <h2>管理员 · 全局流 <span id="stream-count" class="pill info">0</span></h2>
+    <div id="stream" class="list"><div class="empty">还没有消息</div></div>
+  </section>
+
+  <!-- 3. 管理员 · 语料库 -->
+  <section class="panel">
+    <h2>管理员 · 语料库 <span id="corpus-count" class="pill info">0</span></h2>
+
+    <div id="corpus-errors"></div>
+
+    <details open>
+      <summary>规则与映射（可手工增删改）</summary>
+
+      <div class="row wrap" style="margin-top:8px">
+        <input id="manual-note" class="grow" type="text" placeholder="本次变更说明（会写进修订记录）">
+      </div>
+
+      <h3>规则</h3>
+      <div id="rule-list"></div>
+      <div class="card">
+        <div id="rule-form-title" class="tiny muted">新增规则</div>
+        <div class="grid-2">
+          <div><label for="rule-id">规则 id</label><input id="rule-id" type="text" placeholder="r006"></div>
+          <div><label for="rule-severity">severity (1–5)</label><input id="rule-severity" type="number" min="1" max="5" value="2"></div>
+        </div>
+        <label for="rule-description">说明</label>
+        <input id="rule-description" type="text" placeholder="一句话说明这条规则拦什么">
+        <div class="grid-3">
+          <div>
+            <label for="rule-view">视图</label>
+            <select id="rule-view">
+              <option value="raw">raw（归一化后全文）</option>
+              <option value="acrostic">acrostic（每句首字）</option>
+            </select>
+          </div>
+          <div>
+            <label for="rule-matcher">匹配器</label>
+            <select id="rule-matcher">
+              <option value="literal">literal（子串）</option>
+              <option value="regex">regex（正则）</option>
+            </select>
+          </div>
+          <div>
+            <label for="rule-enabled">状态</label>
+            <label class="chk"><input id="rule-enabled" type="checkbox" checked> 启用</label>
+          </div>
+        </div>
+        <label for="rule-pattern">pattern</label>
+        <textarea id="rule-pattern" placeholder="违禁词或正则"></textarea>
+        <label for="rule-examples">examples（每行一条，至少要有一条能被这条规则命中）</label>
+        <textarea id="rule-examples" placeholder="示例文本"></textarea>
+        <div class="row" style="margin-top:6px">
+          <button id="rule-save" class="primary">新增规则</button>
+          <button id="rule-cancel" style="display:none">取消编辑</button>
+        </div>
+      </div>
+
+      <h3>归一化映射</h3>
+      <div id="mapping-list"></div>
+      <div class="card">
+        <div id="mapping-form-title" class="tiny muted">新增映射</div>
+        <div class="grid-3">
+          <div><label for="mapping-id">映射 id</label><input id="mapping-id" type="text" placeholder="m06"></div>
+          <div><label for="mapping-from">from（变形）</label><input id="mapping-from" type="text" placeholder="亻尔"></div>
+          <div><label for="mapping-to">to（标准形）</label><input id="mapping-to" type="text" placeholder="你"></div>
+        </div>
+        <label for="mapping-note">备注</label>
+        <input id="mapping-note" type="text" placeholder="火星文 / 形近字 …">
+        <div class="row" style="margin-top:6px">
+          <button id="mapping-save" class="primary">新增映射</button>
+          <button id="mapping-cancel" style="display:none">取消编辑</button>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>使用 agent 变更语料库</summary>
+      <p class="tiny muted" style="margin:8px 0 4px">
+        agent 只会产出草案，永远不会直接写语料库；草案由你逐条审批后提交。
+      </p>
+      <textarea id="agent-instruction" placeholder="例如：加一条藏头规则，拦住三行首字组成的辱骂；再补两个火星文映射" style="min-height:64px"></textarea>
+      <label class="chk" style="margin-top:6px"><input id="agent-samples" type="checkbox"> 附带最近 30 条消息样本及判定</label>
+      <div class="row" style="margin-top:6px">
+        <button id="agent-btn" class="primary">生成变更草案</button>
+        <span id="agent-hint" class="tiny muted"></span>
+      </div>
+    </details>
+
+    <details id="draft-box">
+      <summary>草案审批 <span id="draft-count" class="pill info">无草案</span></summary>
+      <div id="draft-list" style="margin-top:8px"></div>
+      <div id="draft-footer" style="display:none">
+        <div class="row" style="margin-top:6px">
+          <input id="draft-note" class="grow" type="text" placeholder="本次提交说明（会写进修订记录）">
+          <button id="draft-submit" class="primary">提交选中的变更</button>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>修订记录与回滚</summary>
+      <div id="revision-list" style="margin-top:8px"></div>
+    </details>
+
+    <details>
+      <summary>试跑（草稿语料库，不写库）</summary>
+      <div style="margin-top:8px">
+        <label for="dryrun-source">从历史消息里选一条（可选）</label>
+        <select id="dryrun-source"><option value="">— 手动粘贴 —</option></select>
+        <label for="dryrun-input">试跑文本</label>
+        <textarea id="dryrun-input" placeholder="粘贴一段文本，看看当前草稿语料库会怎么判"></textarea>
+        <div class="row" style="margin-top:6px">
+          <button id="dryrun-btn" class="primary">试跑</button>
+          <span class="tiny muted grow">不产生消息、不产生判定、不影响任何计数</span>
+        </div>
+        <div id="dryrun-result" style="margin-top:8px"></div>
+      </div>
+    </details>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+// ---------- 状态 ----------
+const state = {
+  ws: null,
+  connected: false,
+  players: [],
+  corpus: { rules: [], mappings: [] },
+  revisions: [],
+  stair: { durations: [], permanentThreshold: 5, formula: "" },
+  agentEnabled: false,
+  stream: [],
+  playerId: Number(localStorage.getItem("chatmod.playerId") || 0),
+  draft: null,
+  problems: [],
+  editingRule: null,
+  editingMapping: null,
+  dryRun: null,
+  lastResult: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+// ---------- 小工具 ----------
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else if (k === "html") node.innerHTML = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (k === "checked") node.checked = !!v;
+    else if (k === "value") node.value = v;
+    else node.setAttribute(k, v);
+  }
+  for (const c of children.flat(9)) {
+    if (c === undefined || c === null || c === false) continue;
+    node.append(c.nodeType ? c : document.createTextNode(String(c)));
+  }
+  return node;
+}
+
+function toast(message, bad) {
+  const box = $("toast");
+  const item = el("div", { class: bad ? "bad" : "", text: message });
+  box.append(item);
+  setTimeout(() => item.remove(), 4200);
+}
+
+function fmtDuration(ms) {
+  if (ms === null || ms === undefined) return "永久";
+  if (ms <= 0) return "0 秒";
+  const s = Math.ceil(ms / 1000);
+  if (s < 60) return s + " 秒";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + " 分 " + (s % 60) + " 秒";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + " 小时 " + (m % 60) + " 分";
+  return Math.floor(h / 24) + " 天 " + (h % 24) + " 小时";
+}
+
+function fmtTime(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  return d.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function currentPlayer() {
+  return state.players.find((p) => p.id === state.playerId) || null;
+}
+
+function muteRemainingMs(player) {
+  if (!player || !player.mute) return 0;
+  if (player.mute.permanent) return null; // 永久
+  const end = Date.parse(player.mute.expiresAt);
+  if (!end) return 0;
+  return Math.max(0, end - Date.now());
+}
+
+function isMuted(player) {
+  if (!player || !player.mute) return false;
+  if (player.mute.permanent) return true;
+  return muteRemainingMs(player) > 0;
+}
+
+// ---------- 连接 ----------
+function connect() {
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  const ws = new WebSocket(url);
+  state.ws = ws;
+
+  ws.onopen = () => {
+    state.connected = true;
+    updateConn();
+  };
+  ws.onclose = () => {
+    state.connected = false;
+    updateConn();
+    setTimeout(connect, 1000);
+  };
+  ws.onerror = () => {};
+  ws.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    handle(msg);
+  };
+}
+
+function updateConn() {
+  $("conn").textContent = "";
+  $("conn").append(
+    el("span", { class: "dot " + (state.connected ? "on" : "off") }),
+    state.connected ? "已连接" : "未连接（自动重连中）",
+  );
+}
+
+function send(msg) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    toast("还没连上服务端", true);
+    return false;
+  }
+  state.ws.send(JSON.stringify(msg));
+  return true;
+}
+
+// ---------- 事件分发 ----------
+function handle(msg) {
+  switch (msg.type) {
+    case "bootstrap":
+      state.players = msg.players || [];
+      state.corpus = msg.corpus || { rules: [], mappings: [] };
+      state.revisions = msg.revisions || [];
+      state.stair = msg.stair || state.stair;
+      state.agentEnabled = !!msg.agentEnabled;
+      state.stream = msg.stream || [];
+      if (!state.players.some((p) => p.id === state.playerId)) {
+        state.playerId = state.players.length ? state.players[0].id : 0;
+        localStorage.setItem("chatmod.playerId", String(state.playerId));
+      }
+      // 服务端连接级身份从 0 开始，必须显式同步一次。
+      send({ type: "set_player", playerId: state.playerId });
+      renderPlayers();
+      renderStream();
+      renderCorpus();
+      renderRevisions();
+      renderStair();
+      renderAgent();
+      renderDryRunSource();
+      break;
+
+    case "players":
+      state.players = msg.players || [];
+      if (!state.players.some((p) => p.id === state.playerId)) {
+        state.playerId = state.players.length ? state.players[0].id : 0;
+        localStorage.setItem("chatmod.playerId", String(state.playerId));
+        send({ type: "set_player", playerId: state.playerId });
+      }
+      renderPlayers();
+      break;
+
+    case "stream":
+      if (msg.entry) {
+        state.stream.push(msg.entry);
+        if (state.stream.length > 200) state.stream = state.stream.slice(-200);
+        prependStreamEntry(msg.entry);
+        renderDryRunSource();
+        if (msg.entry.muteStarted) {
+          toast((msg.entry.playerName || "玩家") + " 被禁言：" + (msg.entry.muteStarted.permanent ? "永久" : fmtDuration(msg.entry.muteStarted.remainingMs)));
+        }
+      }
+      break;
+
+    case "mute":
+      // 禁言到期或提前解除：玩家端立刻恢复输入，不必刷新。
+      if (msg.mute === null) {
+        const p = state.players.find((x) => x.id === msg.playerId);
+        if (p) p.mute = null;
+        if (msg.playerId === state.playerId) {
+          toast(msg.endReason === "lifted" ? "你的禁言已被提前解除，可以说话了" : "你可以说话了");
+        }
+        renderPlayers();
+      } else {
+        const p = state.players.find((x) => x.id === msg.playerId);
+        if (p) p.mute = msg.mute;
+        renderPlayers();
+      }
+      break;
+
+    case "result":
+      state.lastResult = msg.result;
+      renderLastResult();
+      break;
+
+    case "corpus":
+      state.corpus = msg.corpus || { rules: [], mappings: [] };
+      state.revisions = msg.revisions || [];
+      renderCorpus();
+      renderRevisions();
+      break;
+
+    case "draft":
+      state.draft = msg.draft;
+      state.problems = (msg.draft && msg.draft.problems) || [];
+      renderDraft(true);
+      break;
+
+    case "draft.problems":
+      state.problems = msg.problems || [];
+      paintProblems();
+      break;
+
+    case "dryrun.result":
+      state.dryRun = msg.result;
+      renderDryRun();
+      break;
+
+    case "error":
+      toast(msg.message, true);
+      if (msg.problems && msg.problems.length) {
+        state.problems = msg.problems;
+        paintProblems();
+        renderCorpusErrors(msg.problems);
+      }
+      break;
+
+    case "ack":
+      if (msg.note) toast(msg.note);
+      break;
+
+    case "draft.committed":
+      state.draft = null;
+      state.problems = [];
+      renderDraft(true);
+      toast(msg.note || "草案已提交");
+      break;
+
+    case "player_selected":
+      break;
+  }
+}
+
+// ---------- 玩家区 ----------
+function renderPlayers() {
+  const select = $("player-select");
+  select.textContent = "";
+  if (!state.players.length) {
+    select.append(el("option", { value: "", text: "（还没有玩家，先创建一个）" }));
+  }
+  for (const p of state.players) {
+    select.append(el("option", { value: String(p.id), text: p.name }));
+  }
+  select.value = String(state.playerId);
+  renderMuteStatus();
+  renderPlayerCounts();
+  renderSendState();
+  renderPlayerTable();
+}
+
+// 玩家列表每行：名字 / 当前禁言剩余 / 7 天违规 / 终身违规 + 操作。
+function renderPlayerTable() {
+  const box = $("player-table");
+  box.textContent = "";
+  if (!state.players.length) {
+    box.append(el("div", { class: "empty", text: "还没有玩家，先创建一个" }));
+    return;
+  }
+  const table = el("table");
+  table.append(el("tr", {},
+    el("th", { text: "名字" }),
+    el("th", { text: "禁言剩余" }),
+    el("th", { text: "7 天" }),
+    el("th", { text: "终身" }),
+    el("th", { text: "操作" }),
+  ));
+  for (const p of state.players) {
+    let remaining = el("span", { class: "muted", text: "无" });
+    if (p.mute) {
+      remaining = p.mute.permanent
+        ? el("span", { class: "pill bad", text: "永久" })
+        : el("span", { class: "pill bad", text: fmtDuration(muteRemainingMs(p)) });
+    }
+    table.append(el("tr", { class: p.id === state.playerId ? "current" : "" },
+      el("td", {}, el("button", { class: "small", text: p.name, onclick: () => selectPlayer(p.id) })),
+      el("td", {}, remaining),
+      el("td", { text: String(p.count7d) }),
+      el("td", { text: String(p.lifetime) }),
+      el("td", {},
+        el("button", { class: "small", text: "改名", onclick: () => renamePlayer(p) }),
+        el("button", { class: "small danger", text: "删除", onclick: () => deletePlayer(p) }),
+        p.mute ? el("button", { class: "small", text: "提前解除", onclick: () => liftMute(p) }) : null,
+      ),
+    ));
+  }
+  box.append(table);
+}
+
+function selectPlayer(id) {
+  state.playerId = id;
+  localStorage.setItem("chatmod.playerId", String(id));
+  $("player-select").value = String(id);
+  send({ type: "set_player", playerId: id });
+  renderMuteStatus();
+  renderPlayerCounts();
+  renderSendState();
+  renderLastResult();
+  renderPlayerTable();
+}
+
+function renamePlayer(p) {
+  const name = prompt("新的名字：", p.name);
+  if (name === null) return;
+  if (!name.trim()) { toast("名字必填", true); return; }
+  send({ type: "player.rename", playerId: p.id, name: name.trim() });
+}
+
+function deletePlayer(p) {
+  if (!confirm(`软删除玩家 ${p.name}？消息、判定、禁言全部保留，同名可以重建。`)) return;
+  send({ type: "player.delete", playerId: p.id });
+}
+
+function liftMute(p) {
+  const reason = prompt(`提前解除 ${p.name} 的禁言，原因（必填）：`);
+  if (reason === null) return;
+  if (!reason.trim()) { toast("原因必填", true); return; }
+  send({ type: "lift", playerId: p.id, reason: reason.trim() });
+}
+
+function renderPlayerCounts() {
+  const p = currentPlayer();
+  const box = $("player-counts");
+  box.textContent = p
+    ? `7 天违规 ${p.count7d} 次 · 终身违规 ${p.lifetime} 次`
+    : "创建玩家后才能发消息";
+}
+
+function renderMuteStatus() {
+  const p = currentPlayer();
+  const banner = $("mute-status");
+  if (!p || !p.mute) {
+    banner.style.display = "none";
+    return;
+  }
+  if (!isMuted(p)) {
+    banner.style.display = "none";
+    return;
+  }
+  banner.style.display = "block";
+  banner.className = "mute-banner";
+  banner.textContent = p.mute.permanent
+    ? "你被永久禁言，只有管理员可以提前解除。"
+    : "你被禁言了，剩余 " + fmtDuration(muteRemainingMs(p)) + "。";
+}
+
+function renderSendState() {
+  const muted = isMuted(currentPlayer());
+  $("send-btn").disabled = muted;
+  $("chat-input").disabled = muted;
+  $("lift-btn").disabled = !(currentPlayer() && currentPlayer().mute);
+}
+
+function renderLastResult() {
+  const box = $("last-result");
+  box.textContent = "";
+  const res = state.lastResult;
+  if (!res) return;
+  const entry = res.entry || {};
+  if (res.rejected) {
+    box.append(
+      el("div", { class: "pill bad", text: "被拒绝" }),
+      el("div", { class: "tiny", style: "margin-top:6px", text: res.rejectReason || "" }),
+    );
+    return;
+  }
+  box.append(verdictSummary(entry));
+  if (entry.text) {
+    box.append(el("div", { class: "tiny muted", style: "margin-top:6px", text: "原文：" + entry.text }));
+  }
+  if (entry.normalizedText && entry.normalizedText !== entry.text) {
+    box.append(el("div", { class: "tiny muted", text: "归一化后：" + entry.normalizedText }));
+  }
+  if (entry.acrostic) {
+    box.append(el("div", { class: "tiny muted", text: "藏头视图：" + entry.acrostic }));
+  }
+}
+
+function sevPill(severity, prefix) {
+  const sev = Number(severity) || 0;
+  return el("span", { class: "pill sev-" + Math.max(1, Math.min(5, sev)), text: (prefix || "L") + sev });
+}
+
+function verdictSummary(entry) {
+  const wrap = el("div", { class: "meta" });
+  if (!entry.isViolation) {
+    wrap.append(el("span", { class: "pill ok", text: "放行" }));
+  } else {
+    wrap.append(
+      sevPill(entry.severity),
+      el("span", { class: "pill bad", text: entry.disposition === "mute" ? "禁言" : entry.disposition }),
+      el("span", {
+        class: "pill",
+        text: entry.permanent
+          ? "永久"
+          : "档位 " + entry.rung + " · " + fmtDuration(entry.durationMs),
+      }),
+      el("span", { class: "pill info", text: "命中 " + entry.hitCount + " 条" }),
+      el("span", { class: "pill", text: "7天 " + entry.count7d + " · 终身 " + entry.lifetime }),
+    );
+  }
+  const body = el("div", { style: "margin-top:6px" });
+  body.append(wrap);
+  if (entry.hits && entry.hits.length) {
+    const hits = el("div", { class: "hit-list", style: "margin-top:6px" });
+    for (const h of entry.hits) {
+      hits.append(el("span", {
+        class: "pill sev-" + Math.max(1, Math.min(5, h.severity)),
+        text: `${h.ruleId} · L${h.severity} · ${h.view} · ${h.pattern}`,
+        title: h.pattern,
+      }));
+    }
+    body.append(hits);
+  }
+  if (entry.muteStarted) {
+    body.append(el("div", {
+      class: "tiny",
+      style: "margin-top:6px;color:#ffb3ae",
+      text: entry.muteStarted.permanent
+        ? "禁言：永久" + (entry.muteReplaced ? "（替换了原有禁言）" : "")
+        : "禁言至 " + new Date(Date.parse(entry.muteStarted.expiresAt)).toLocaleString("zh-CN") +
+          "（剩余 " + fmtDuration(entry.muteStarted.remainingMs) + "）" + (entry.muteReplaced ? "，替换了原有禁言" : ""),
+    }));
+  }
+  return body;
+}
+
+// ---------- 全局流 ----------
+function renderStream() {
+  const box = $("stream");
+  box.textContent = "";
+  $("stream-count").textContent = String(state.stream.length);
+  if (!state.stream.length) {
+    box.append(el("div", { class: "empty", text: "还没有消息" }));
+    return;
+  }
+  const items = state.stream.slice().reverse();
+  for (const entry of items) {
+    box.append(entry.kind === "lift" ? liftEntry(entry) : messageEntry(entry));
+  }
+}
+
+// 新条目插到最前面，避免整块重建导致滚动位置跳动。
+function prependStreamEntry(entry) {
+  const box = $("stream");
+  const empty = box.querySelector(".empty");
+  if (empty) empty.remove();
+  box.prepend(entry.kind === "lift" ? liftEntry(entry) : messageEntry(entry));
+  while (box.children.length > 200) box.lastElementChild.remove();
+  $("stream-count").textContent = String(state.stream.length);
+}
+
+function messageEntry(entry) {
+  const card = el("div", { class: "entry" + (entry.rejected ? " rejected" : "") });
+  card.append(el("div", { class: "who" },
+    el("b", { text: entry.playerName || ("#" + entry.playerId) }),
+    el("span", { class: "tiny muted", text: fmtTime(entry.at) }),
+    entry.rejected ? el("span", { class: "pill bad", text: "被拒绝" }) : null,
+  ));
+  card.append(el("div", { class: "msg mono", text: entry.text || "" }));
+  if (entry.rejected) {
+    card.append(el("div", { class: "tiny", style: "color:#ff9c96", text: entry.rejectReason || "" }));
+  } else {
+    card.append(verdictSummary(entry));
+    if (entry.normalizedText && entry.normalizedText !== entry.text) {
+      card.append(el("div", { class: "tiny muted", style: "margin-top:4px", text: "归一化：" + entry.normalizedText }));
+    }
+    if (entry.acrostic) {
+      card.append(el("div", { class: "tiny muted", text: "藏头视图：" + entry.acrostic }));
+    }
+  }
+  if (entry.truncated) {
+    card.append(el("div", { class: "tiny muted", text: "（原文超出 2000 字，已截断）" }));
+  }
+  return card;
+}
+
+function liftEntry(entry) {
+  return el("div", { class: "entry lift" },
+    el("div", { class: "who" },
+      el("b", { text: entry.playerName || ("#" + entry.playerId) }),
+      el("span", { class: "tiny muted", text: fmtTime(entry.at) }),
+      el("span", { class: "pill info", text: "管理员提前解除禁言" }),
+    ),
+    el("div", { class: "tiny", style: "margin-top:5px", text: "原因：" + (entry.note || "") }),
+  );
+}
+
+// ---------- 语料库 ----------
+function renderCorpusErrors(problems) {
+  const box = $("corpus-errors");
+  box.textContent = "";
+  if (!problems || !problems.length) return;
+  const bad = problems.filter((p) => p.messages && p.messages.length);
+  if (!bad.length) return;
+  box.append(el("div", { class: "card bad" },
+    el("div", { class: "tiny", text: "校验未通过：" }),
+    ...bad.map((p) => el("div", { class: "tiny", style: "color:#ff9c96", text: `#${p.index + 1} ${p.messages.join("；")}` })),
+  ));
+}
+
+function renderCorpus() {
+  $("corpus-count").textContent =
+    `${state.corpus.rules.length} 条规则 · ${state.corpus.mappings.length} 条映射`;
+  renderRuleList();
+  renderMappingList();
+  renderDryRunSource();
+}
+
+function renderRuleList() {
+  const box = $("rule-list");
+  box.textContent = "";
+  if (!state.corpus.rules.length) {
+    box.append(el("div", { class: "empty", text: "还没有规则" }));
+  }
+  for (const r of state.corpus.rules.slice().sort((a, b) => a.id.localeCompare(b.id))) {
+    const line = el("div", { class: "rule-line" + (r.enabled ? "" : " rule-off"), style: "padding:4px 0;border-bottom:1px solid var(--line)" },
+      sevPill(r.severity),
+      el("span", { class: "mono tiny", text: r.id }),
+      el("span", { class: "grow", text: (r.description || "") + " · " + r.view + "/" + r.matcher + " · " + r.pattern }),
+      el("button", { class: "small", text: "编辑", onclick: () => loadRuleIntoForm(r) }),
+      el("button", { class: "small danger", text: "删除", onclick: () => deleteRule(r) }),
+    );
+    box.append(line);
+  }
+}
+
+function renderMappingList() {
+  const box = $("mapping-list");
+  box.textContent = "";
+  if (!state.corpus.mappings.length) {
+    box.append(el("div", { class: "empty", text: "还没有映射" }));
+  }
+  for (const m of state.corpus.mappings.slice().sort((a, b) => a.id.localeCompare(b.id))) {
+    box.append(el("div", { class: "rule-line", style: "padding:4px 0;border-bottom:1px solid var(--line)" },
+      el("span", { class: "mono tiny", text: m.id }),
+      el("span", { class: "grow", text: `${m.from} → ${m.to}${m.note ? " · " + m.note : ""}` }),
+      el("button", { class: "small", text: "编辑", onclick: () => loadMappingIntoForm(m) }),
+      el("button", { class: "small danger", text: "删除", onclick: () => deleteMapping(m) }),
+    ));
+  }
+}
+
+function loadRuleIntoForm(r) {
+  state.editingRule = r.id;
+  $("rule-form-title").textContent = "修改规则 " + r.id + "（保存会提交为一次修订）";
+  $("rule-id").value = r.id;
+  $("rule-id").disabled = true;
+  $("rule-description").value = r.description || "";
+  $("rule-view").value = r.view;
+  $("rule-matcher").value = r.matcher;
+  $("rule-pattern").value = r.pattern;
+  $("rule-severity").value = String(r.severity);
+  $("rule-enabled").checked = !!r.enabled;
+  $("rule-examples").value = (r.examples || []).join("\n");
+  $("rule-save").textContent = "保存修改";
+  $("rule-cancel").style.display = "";
+}
+
+function resetRuleForm() {
+  state.editingRule = null;
+  $("rule-form-title").textContent = "新增规则";
+  $("rule-id").value = "";
+  $("rule-id").disabled = false;
+  $("rule-description").value = "";
+  $("rule-view").value = "raw";
+  $("rule-matcher").value = "literal";
+  $("rule-pattern").value = "";
+  $("rule-severity").value = "2";
+  $("rule-enabled").checked = true;
+  $("rule-examples").value = "";
+  $("rule-save").textContent = "新增规则";
+  $("rule-cancel").style.display = "none";
+}
+
+function ruleFromForm() {
+  return {
+    id: $("rule-id").value.trim(),
+    description: $("rule-description").value.trim(),
+    view: $("rule-view").value,
+    matcher: $("rule-matcher").value,
+    pattern: $("rule-pattern").value,
+    severity: Number($("rule-severity").value),
+    enabled: $("rule-enabled").checked,
+    examples: $("rule-examples").value.split("\n").map((s) => s.trim()).filter(Boolean),
+  };
+}
+
+function manualNote() {
+  return $("manual-note").value.trim() || "手工调整语料库";
+}
+
+function saveRule() {
+  const after = ruleFromForm();
+  if (!after.id) { toast("规则 id 不能为空", true); return; }
+  const editing = state.editingRule;
+  const op = {
+    op: editing ? "update" : "add",
+    target: "rule",
+    reason: editing ? "管理员手工修改规则" : "管理员手工新增规则",
+    ruleAfter: after,
+  };
+  if (editing) op.ruleBefore = { id: editing };
+  if (send({ type: "corpus.manual", operations: [op], note: manualNote() })) {
+    resetRuleForm();
+  }
+}
+
+function deleteRule(r) {
+  if (!confirm(`删除规则 ${r.id}？`)) return;
+  send({
+    type: "corpus.manual",
+    note: manualNote(),
+    operations: [{ op: "delete", target: "rule", reason: "管理员手工删除规则", ruleBefore: { id: r.id } }],
+  });
+}
+
+function loadMappingIntoForm(m) {
+  state.editingMapping = m.id;
+  $("mapping-form-title").textContent = "修改映射 " + m.id;
+  $("mapping-id").value = m.id;
+  $("mapping-id").disabled = true;
+  $("mapping-from").value = m.from;
+  $("mapping-to").value = m.to;
+  $("mapping-note").value = m.note || "";
+  $("mapping-save").textContent = "保存修改";
+  $("mapping-cancel").style.display = "";
+}
+
+function resetMappingForm() {
+  state.editingMapping = null;
+  $("mapping-form-title").textContent = "新增映射";
+  $("mapping-id").value = "";
+  $("mapping-id").disabled = false;
+  $("mapping-from").value = "";
+  $("mapping-to").value = "";
+  $("mapping-note").value = "";
+  $("mapping-save").textContent = "新增映射";
+  $("mapping-cancel").style.display = "none";
+}
+
+function saveMapping() {
+  const after = {
+    id: $("mapping-id").value.trim(),
+    from: $("mapping-from").value,
+    to: $("mapping-to").value,
+    note: $("mapping-note").value.trim(),
+  };
+  if (!after.id) { toast("映射 id 不能为空", true); return; }
+  const editing = state.editingMapping;
+  const op = {
+    op: editing ? "update" : "add",
+    target: "mapping",
+    reason: editing ? "管理员手工修改映射" : "管理员手工新增映射",
+    mappingAfter: after,
+  };
+  if (editing) op.mappingBefore = { id: editing };
+  if (send({ type: "corpus.manual", operations: [op], note: manualNote() })) {
+    resetMappingForm();
+  }
+}
+
+function deleteMapping(m) {
+  if (!confirm(`删除映射 ${m.id}？`)) return;
+  send({
+    type: "corpus.manual",
+    note: manualNote(),
+    operations: [{ op: "delete", target: "mapping", reason: "管理员手工删除映射", mappingBefore: { id: m.id } }],
+  });
+}
+
+// ---------- agent ----------
+function renderAgent() {
+  const btn = $("agent-btn");
+  btn.disabled = !state.agentEnabled;
+  $("agent-hint").textContent = state.agentEnabled
+    ? "agent 只产出草案，提交前由你逐条审批。"
+    : "未配置 AGENT_API_KEY：agent 不可用，其余功能完全可用，可手工添加规则与映射。";
+}
+
+// ---------- 草案审批 ----------
+function renderDraft(rebuild) {
+  const box = $("draft-list");
+  const footer = $("draft-footer");
+  const badge = $("draft-count");
+  if (!state.draft) {
+    badge.textContent = "无草案";
+    if (rebuild) { box.textContent = ""; box.append(el("div", { class: "empty", text: "还没有草案" })); }
+    footer.style.display = "none";
+    return;
+  }
+  if (!rebuild) { paintProblems(); return; }
+
+  badge.textContent = `${state.draft.operations.length} 条建议`;
+  box.textContent = "";
+
+  const meta = el("div", { class: "tiny muted", style: "margin-bottom:6px" },
+    `指令：${state.draft.instruction}`,
+    state.draft.includeSamples
+      ? ` · 附带样本 ${state.draft.samples ? state.draft.samples.length : 0} 条`
+      : " · 未附带样本（建议标注为无样本依据）",
+  );
+  box.append(meta);
+
+  state.draft.operations.forEach((op, index) => {
+    box.append(draftCard(op, index));
+  });
+
+  footer.style.display = "";
+  paintProblems();
+}
+
+function draftCard(op, index) {
+  const card = el("div", { class: "card", "data-op-index": String(index) });
+  const head = el("div", { class: "row wrap" });
+  const checkbox = el("input", {
+    type: "checkbox",
+    checked: true,
+    "data-op-check": String(index),
+    onchange: () => paintProblems(),
+  });
+  head.append(
+    el("label", { class: "chk" }, checkbox, "勾选"),
+    el("span", { class: "pill info", text: opLabel(op) }),
+    op.samples && op.samples.length
+      ? el("span", { class: "samples", text: "基于样本 #" + op.samples.join(", #") })
+      : el("span", { class: "samples", text: "无样本依据" }),
+  );
+  card.append(head);
+
+  card.append(el("div", { class: "tiny muted", style: "margin:4px 0", text: "理由：" + (op.reason || "（agent 未给出理由）") }));
+
+  const problems = state.problems.find((p) => p.index === index);
+  const problemBox = el("div", { class: "tiny", "data-problem-for": String(index), style: "color:#ff9c96" });
+  if (problems && problems.messages && problems.messages.length) {
+    problemBox.textContent = problems.messages.join("；");
+  }
+  card.append(problemBox);
+
+  if (op.op !== "delete") {
+    card.append(ruleOrMappingEditor(op, index));
+  } else {
+    const target = op.ruleBefore || op.mappingBefore || {};
+    card.append(el("div", { class: "tiny muted", text: `删除 ${op.target} ${target.id || ""}` }));
+  }
+  return card;
+}
+
+function opLabel(op) {
+  const verb = { add: "新增", update: "修改", delete: "删除" }[op.op] || op.op;
+  const target = op.target === "rule" ? "规则" : op.target === "mapping" ? "映射" : op.target;
+  const id = (op.ruleAfter || op.ruleBefore || op.mappingAfter || op.mappingBefore || {}).id || "";
+  return `${verb}${target} ${id}`;
+}
+
+function ruleOrMappingEditor(op, index) {
+  if (op.target === "mapping") {
+    const m = (op.mappingAfter = op.mappingAfter || { id: "", from: "", to: "", note: "" });
+    const wrap = el("div");
+    wrap.append(el("div", { class: "grid-3" },
+      labeledInput("id", m.id, (v) => { m.id = v; scheduleValidate(); }),
+      labeledInput("from", m.from, (v) => { m.from = v; scheduleValidate(); }),
+      labeledInput("to", m.to, (v) => { m.to = v; scheduleValidate(); }),
+    ));
+    wrap.append(labeledInput("备注", m.note, (v) => { m.note = v; }));
+    return wrap;
+  }
+
+  const r = (op.ruleAfter = op.ruleAfter || {
+    id: "", description: "", view: "raw", matcher: "literal", pattern: "",
+    severity: 1, enabled: true, examples: [],
+  });
+
+  const wrap = el("div");
+  wrap.append(el("div", { class: "grid-2" },
+    labeledInput("id", r.id, (v) => { r.id = v; scheduleValidate(); }),
+    labeledInput("severity (1–5)", r.severity, (v) => { r.severity = Number(v); scheduleValidate(); }, "number", "1", "5"),
+  ));
+  wrap.append(labeledInput("说明", r.description, (v) => { r.description = v; }));
+
+  const viewSel = el("select", {
+    onchange: (e) => { r.view = e.target.value; scheduleValidate(); },
+  },
+    el("option", { value: "raw", text: "raw" }),
+    el("option", { value: "acrostic", text: "acrostic" }),
+  );
+  viewSel.value = r.view;
+
+  const matcherSel = el("select", {
+    onchange: (e) => { r.matcher = e.target.value; scheduleValidate(); },
+  },
+    el("option", { value: "literal", text: "literal" }),
+    el("option", { value: "regex", text: "regex" }),
+  );
+  matcherSel.value = r.matcher;
+
+  const enabled = el("input", {
+    type: "checkbox",
+    checked: !!r.enabled,
+    onchange: (e) => { r.enabled = e.target.checked; },
+  });
+
+  wrap.append(el("div", { class: "grid-3" },
+    el("div", {}, el("label", { text: "view" }), viewSel),
+    el("div", {}, el("label", { text: "matcher" }), matcherSel),
+    el("div", {}, el("label", { text: "状态" }), el("label", { class: "chk" }, enabled, "启用")),
+  ));
+
+  const pattern = el("textarea", {
+    oninput: (e) => { r.pattern = e.target.value; scheduleValidate(); },
+  });
+  pattern.value = r.pattern || "";
+  wrap.append(el("label", { text: "pattern" }), pattern);
+
+  const examples = el("textarea", {
+    placeholder: "每行一条 example",
+    oninput: (e) => {
+      r.examples = e.target.value.split("\n").map((s) => s.trim()).filter(Boolean);
+      scheduleValidate();
+    },
+  });
+  examples.value = (r.examples || []).join("\n");
+  wrap.append(el("label", { text: "examples（必须能被这条规则命中）" }), examples);
+  return wrap;
+}
+
+function labeledInput(label, value, onInput, type, min, max) {
+  const input = el("input", {
+    type: type || "text",
+    min: min, max: max,
+    oninput: (e) => onInput(e.target.value),
+  });
+  input.value = value === undefined || value === null ? "" : String(value);
+  return el("div", {}, el("label", { text: label }), input);
+}
+
+let validateTimer = null;
+function scheduleValidate() {
+  clearTimeout(validateTimer);
+  validateTimer = setTimeout(() => {
+    if (!state.draft) return;
+    send({ type: "draft.validate", operations: state.draft.operations });
+  }, 220);
+}
+
+function paintProblems() {
+  if (!state.draft) return;
+  const ops = state.draft.operations;
+  const cards = $("draft-list").querySelectorAll("[data-op-index]");
+  cards.forEach((card) => {
+    const index = Number(card.getAttribute("data-op-index"));
+    const problem = state.problems.find((p) => p.index === index);
+    const bad = !!(problem && problem.messages && problem.messages.length);
+    card.classList.toggle("bad", bad);
+    const box = card.querySelector(`[data-problem-for="${index}"]`);
+    if (box) {
+      box.textContent = bad ? problem.messages.join("；") : "";
+    }
+    const chk = card.querySelector(`[data-op-check="${index}"]`);
+    if (chk) {
+      chk.disabled = bad;
+      if (bad) chk.checked = false;
+    }
+  });
+}
+
+function submitDraft() {
+  if (!state.draft) return;
+  const selected = [];
+  const cards = $("draft-list").querySelectorAll("[data-op-index]");
+  cards.forEach((card) => {
+    const index = Number(card.getAttribute("data-op-index"));
+    const chk = card.querySelector(`[data-op-check="${index}"]`);
+    if (chk && chk.checked && !chk.disabled) selected.push(state.draft.operations[index]);
+  });
+  if (!selected.length) { toast("没有勾选任何变更", true); return; }
+  send({
+    type: "draft.commit",
+    operations: selected,
+    note: $("draft-note").value.trim() || "通过 agent 草案提交",
+  });
+}
+
+// ---------- 修订 ----------
+function renderRevisions() {
+  const box = $("revision-list");
+  box.textContent = "";
+  if (!state.revisions.length) {
+    box.append(el("div", { class: "empty", text: "还没有修订" }));
+    return;
+  }
+  for (const rev of state.revisions) {
+    const changes = (rev.changes || []).map((c) => {
+      const verb = { add: "＋", update: "±", delete: "－" }[c.op] || c.op;
+      return el("div", { class: "tiny muted", text: `${verb} ${c.target} ${c.id}：${c.detail}` });
+    });
+    box.append(el("div", { class: "card" },
+      el("div", { class: "row wrap" },
+        el("span", { class: "pill info", text: "#" + rev.id }),
+        el("span", { class: "tiny muted", text: new Date(rev.createdAt).toLocaleString("zh-CN") }),
+        el("span", { class: "grow tiny", text: rev.summary }),
+        el("button", { class: "small", text: "回滚到这一版", onclick: () => rollback(rev.id) }),
+      ),
+      rev.note ? el("div", { class: "tiny", style: "margin-top:4px", text: "说明：" + rev.note }) : null,
+      changes.length ? el("div", { style: "margin-top:4px" }, ...changes) : el("div", { class: "tiny muted", text: "（无内容差异）" }),
+    ));
+  }
+}
+
+function rollback(revisionId) {
+  const note = prompt(`回滚到修订 #${revisionId} 的原因（必填）：`);
+  if (note === null) return;
+  if (!note.trim()) { toast("回滚必须填写原因", true); return; }
+  send({ type: "revision.rollback", revisionId, note: note.trim() });
+}
+
+// ---------- 试跑 ----------
+function renderDryRunSource() {
+  const sel = $("dryrun-source");
+  const keep = sel.value;
+  sel.textContent = "";
+  sel.append(el("option", { value: "", text: "— 手动粘贴 —" }));
+  const messages = state.stream.filter((e) => e.kind === "message" && e.text);
+  for (const m of messages.slice(-30).reverse()) {
+    sel.append(el("option", {
+      value: String(m.seq),
+      text: `${m.playerName}：${m.text.slice(0, 40)}`,
+    }));
+  }
+  sel.value = keep;
+  if (!sel.value) sel.value = "";
+}
+
+function renderDryRun() {
+  const box = $("dryrun-result");
+  box.textContent = "";
+  const r = state.dryRun;
+  if (!r) return;
+  box.append(el("div", { class: "tiny muted", text: "语料库：" + (r.corpusSource === "draft" ? "草稿状态" : "已提交版本") }));
+  box.append(verdictSummary({
+    isViolation: r.isViolation,
+    severity: r.severity,
+    disposition: r.disposition,
+    rung: r.rung,
+    durationMs: r.durationMs,
+    permanent: r.permanent,
+    hitCount: r.hitCount,
+    count7d: r.count7d,
+    lifetime: r.lifetime,
+    hits: r.hits,
+  }));
+  box.append(el("div", { class: "tiny muted", style: "margin-top:6px", text: "归一化：" + r.normalizedText }));
+  box.append(el("div", { class: "tiny muted", text: "藏头视图：" + r.acrosticView }));
+  if (r.truncated) box.append(el("div", { class: "tiny muted", text: "（文本超出 2000 字，已截断）" }));
+}
+
+// ---------- 阶梯 ----------
+function renderStair() {
+  const table = $("stair-table");
+  table.textContent = "";
+  table.append(el("tr", {}, el("th", { text: "档位" }), el("th", { text: "时长" })));
+  for (const d of state.stair.durations || []) {
+    table.append(el("tr", {}, el("td", { text: String(d.rung) }), el("td", { text: d.label })));
+  }
+  table.append(el("tr", {},
+    el("td", { text: "永久" }),
+    el("td", { text: `终身违规 ≥ ${state.stair.permanentThreshold} 次（含本次）` }),
+  ));
+  $("stair-formula").textContent = state.stair.formula || "";
+}
+
+// ---------- 交互绑定 ----------
+$("player-select").addEventListener("change", (e) => {
+  const id = Number(e.target.value) || 0;
+  if (id === state.playerId) return;
+  selectPlayer(id);
+});
+
+$("create-player").addEventListener("click", () => {
+  const name = $("new-player-name").value.trim();
+  if (!name) { toast("名字必填", true); return; }
+  if (send({ type: "player.create", name })) $("new-player-name").value = "";
+});
+
+$("rename-player").addEventListener("click", () => {
+  const p = currentPlayer();
+  if (!p) { toast("先选择一个玩家", true); return; }
+  renamePlayer(p);
+});
+
+$("delete-player").addEventListener("click", () => {
+  const p = currentPlayer();
+  if (!p) { toast("先选择一个玩家", true); return; }
+  deletePlayer(p);
+});
+
+$("lift-btn").addEventListener("click", () => {
+  const p = currentPlayer();
+  if (!p) { toast("先选择一个玩家", true); return; }
+  liftMute(p);
+});
+
+function doSend() {
+  const text = $("chat-input").value;
+  if (!text.trim()) return;
+  if (!currentPlayer()) { toast("先创建一个玩家", true); return; }
+  if (send({ type: "send", text })) $("chat-input").value = "";
+}
+
+$("send-btn").addEventListener("click", doSend);
+$("chat-input").addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    doSend();
+  }
+});
+
+$("rule-save").addEventListener("click", saveRule);
+$("rule-cancel").addEventListener("click", resetRuleForm);
+$("mapping-save").addEventListener("click", saveMapping);
+$("mapping-cancel").addEventListener("click", resetMappingForm);
+
+$("agent-btn").addEventListener("click", () => {
+  const instruction = $("agent-instruction").value.trim();
+  if (!instruction) { toast("先写清楚要让 agent 做什么", true); return; }
+  $("agent-btn").disabled = true;
+  send({ type: "draft.request", instruction, includeSamples: $("agent-samples").checked });
+  setTimeout(() => { $("agent-btn").disabled = !state.agentEnabled; }, 300);
+});
+
+$("draft-submit").addEventListener("click", submitDraft);
+
+$("dryrun-source").addEventListener("change", (e) => {
+  const seq = Number(e.target.value);
+  const entry = state.stream.find((x) => x.seq === seq && x.kind === "message");
+  if (entry) $("dryrun-input").value = entry.text;
+});
+
+$("dryrun-btn").addEventListener("click", () => {
+  const text = $("dryrun-input").value;
+  if (!text.trim()) { toast("试跑文本不能为空", true); return; }
+  send({
+    type: "dryrun",
+    text,
+    playerId: state.playerId,
+    operations: state.draft ? state.draft.operations : [],
+  });
+});
+
+// 每秒刷新一次禁言倒计时；到点后服务端会主动推送"你可以说话了"。
+setInterval(() => {
+  const hasMute = state.players.some((p) => p.mute);
+  if (!hasMute) return;
+  renderPlayerTable();
+  const p = currentPlayer();
+  if (!p || !p.mute) return;
+  renderMuteStatus();
+  renderSendState();
+}, 1000);
+
+// 启动
+updateConn();
+resetRuleForm();
+resetMappingForm();
+$("draft-list").append(el("div", { class: "empty", text: "还没有草案" }));
+connect();
+</script>
+</body>
+</html>

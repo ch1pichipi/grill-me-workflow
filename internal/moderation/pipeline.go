@@ -38,13 +38,13 @@ func Normalize(text string, sorted []Mapping) string {
 var acrosticDelims = map[rune]bool{
 	'\n': true,
 	'\r': true,
-	'。': true,
-	'！': true,
-	'？': true,
-	'；': true,
-	'，': true,
-	'、': true,
-	'…': true,
+	'。':  true,
+	'！':  true,
+	'？':  true,
+	'；':  true,
+	'，':  true,
+	'、':  true,
+	'…':  true,
 }
 
 // Acrostic 抽取藏头视图：按换行与中文标点切句，取每段首个非空白字符。

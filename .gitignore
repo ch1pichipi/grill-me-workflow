@@ -48,3 +48,9 @@ Thumbs.db
 
 # Local overrides
 .claude/settings.local.json
+
+# 演示系统的本地数据（SQLite）与临时运行目录
+*.db
+*.db-shm
+*.db-wal
+.tmp-run/
