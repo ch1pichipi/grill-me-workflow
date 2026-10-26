@@ -28,6 +28,16 @@ func TestNormalizeAppliesLongestFirst(t *testing.T) {
 			want: "XC",
 		},
 		{
+			name: "to 留空表示删除片段（去噪符号）",
+			mappings: []Mapping{
+				{ID: "m06", From: "@", To: ""},
+				{ID: "m07", From: "#", To: ""},
+				{ID: "m08", From: "}", To: ""},
+			},
+			in:   "你是@#傻逼}",
+			want: "你是傻逼",
+		},
+		{
 			name:     "空 from 被跳过",
 			mappings: []Mapping{{ID: "m01", From: "", To: "x"}},
 			in:       "原样",

@@ -160,12 +160,14 @@ type DryRunResult struct {
 
 // Bootstrap 是新连接拿到的完整初始状态。
 type Bootstrap struct {
-	Players      []PlayerView   `json:"players"`
-	Corpus       corpus.Corpus  `json:"corpus"`
-	Revisions    []RevisionView `json:"revisions"`
-	Stair        StairView      `json:"stair"`
-	AgentEnabled bool           `json:"agentEnabled"`
-	Stream       []StreamEntry  `json:"stream"`
+	Players      []PlayerView       `json:"players"`
+	Corpus       corpus.Corpus      `json:"corpus"`
+	Revisions    []RevisionView     `json:"revisions"`
+	Stair        StairView          `json:"stair"`
+	AgentEnabled bool               `json:"agentEnabled"`
+	AgentModel   string             `json:"agentModel"`
+	AgentLog     []drafter.Exchange `json:"agentLog"`
+	Stream       []StreamEntry      `json:"stream"`
 }
 
 // Service 是编排层：玩家、发送、判定、禁言状态机、语料库与草案。
@@ -182,7 +184,14 @@ type Service struct {
 	timers map[int64]*time.Timer
 	stream []StreamEntry
 	seq    int64
+
+	// agent 往返日志（只用于排障）：最新的在最后一条。
+	logMu    sync.Mutex
+	agentLog []drafter.Exchange
 }
+
+// agentLogLimit 是在内存里保留的 agent 往返记录条数。
+const agentLogLimit = 10
 
 // NewService 载入当前语料库（必要时写入种子语料库）并恢复禁言到期定时器。
 func NewService(st *store.Store, d drafter.Drafter, now func() time.Time) (*Service, error) {
@@ -224,6 +233,11 @@ func NewService(st *store.Store, d drafter.Drafter, now func() time.Time) (*Serv
 	s.snap.Store(snap)
 
 	s.restoreMutes()
+
+	// agent 每次往返都留档：进程日志 + 界面上的“请求/响应日志”面板。
+	if rec, ok := d.(drafter.ExchangeRecorder); ok {
+		rec.ObserveExchange(s.recordAgentExchange)
+	}
 	return s, nil
 }
 
@@ -242,6 +256,52 @@ func (s *Service) SetBroadcaster(b Broadcaster) { s.hub = b }
 
 // AgentEnabled 报告 agent 是否可用（无 key 时按钮禁用）。
 func (s *Service) AgentEnabled() bool { return s.drafter != nil && s.drafter.Enabled() }
+
+// AgentModel 返回当前模型名（未配置时为空串）。
+func (s *Service) AgentModel() string {
+	if n, ok := s.drafter.(interface{ ModelName() string }); ok {
+		return n.ModelName()
+	}
+	return ""
+}
+
+// AgentLog 返回最近的 agent 往返记录（旧的在前）。
+func (s *Service) AgentLog() []drafter.Exchange {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	return append([]drafter.Exchange(nil), s.agentLog...)
+}
+
+// recordAgentExchange 把一次往返落到进程日志与内存环形缓冲区，并推给所有管理员页面。
+func (s *Service) recordAgentExchange(ex drafter.Exchange) {
+	s.logMu.Lock()
+	s.agentLog = append(s.agentLog, ex)
+	if len(s.agentLog) > agentLogLimit {
+		s.agentLog = append([]drafter.Exchange(nil), s.agentLog[len(s.agentLog)-agentLogLimit:]...)
+	}
+	s.logMu.Unlock()
+
+	log.Printf("agent → POST %s model=%s 指令=%q 样本=%d 请求体=%d 字节",
+		ex.URL, ex.Model, clipLog(ex.Instruction, 120), ex.Samples, len(ex.Request))
+	log.Printf("agent ← status=%d 用时=%dms 响应体=%d 字节 操作=%d 错误=%v",
+		ex.Status, ex.ElapsedMS, len(ex.Response), ex.Operations, ex.Error)
+	if ex.Warning != "" {
+		log.Printf("agent 警告: %s", ex.Warning)
+	}
+	log.Printf("agent 请求体（截断）: %s", clipLog(ex.Request, 2000))
+	log.Printf("agent 响应体: %s", clipLog(ex.Response, 2000))
+
+	s.emit(agentLogEvent{Type: "agent.log", Exchange: ex})
+}
+
+// clipLog 把日志里的长文本截断，完整内容留在界面的 agent 日志面板里。
+func clipLog(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…（截断，完整内容见界面 agent 日志）"
+}
 
 func (s *Service) emit(v any) {
 	if s.hub != nil {
@@ -968,6 +1028,8 @@ func (s *Service) Bootstrap() (Bootstrap, error) {
 		Revisions:    revs,
 		Stair:        Stair(),
 		AgentEnabled: s.AgentEnabled(),
+		AgentModel:   s.AgentModel(),
+		AgentLog:     s.AgentLog(),
 		Stream:       s.historyLocked(100),
 	}, nil
 }

@@ -209,9 +209,8 @@ func ValidateOp(cur Corpus, op Operation) []string {
 		if strings.TrimSpace(m.From) == "" {
 			add("映射的 from 不能为空")
 		}
-		if strings.TrimSpace(m.To) == "" {
-			add("映射的 to 不能为空")
-		}
+		// to 留空是合法且必要的：它表示"把这个片段删掉"（噪声符号、插入符、分隔符）。
+		// 没有它就没法表达"归一化时去掉 @#~ 这类符号"。
 		if m.From == m.To {
 			add("映射的 from 与 to 相同，这条映射不会产生任何效果")
 		}

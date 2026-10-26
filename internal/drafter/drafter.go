@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"chatmod/internal/corpus"
 	"chatmod/internal/moderation"
@@ -48,6 +49,9 @@ const SystemPrompt = `你是一个聊天审核系统的语料库助手。你只�
 - 每条规则的 examples 必须真实可命中：若用 acrostic 视图，example 的藏头必须等于 pattern
   （literal）或能被 pattern 正则匹配。
 
+预算意识：输出上限是有限的。一次最多给出 12 条 operations，reason 控制在 40 字内，
+并把最重要的变更排在数组前面——输出被 max_tokens 截断时服务端只保留完整条目。
+
 只输出一个 JSON 对象，不要输出解释文字、不要用 Markdown 代码块。结构：
 
 {"operations":[
@@ -57,10 +61,12 @@ const SystemPrompt = `你是一个聊天审核系统的语料库助手。你只�
   {"op":"update","target":"rule","reason":"...","ruleBefore":{"id":"r003"}, "ruleAfter":{ ...完整规则... }},
   {"op":"delete","target":"rule","reason":"...","ruleBefore":{"id":"r003"}},
   {"op":"add","target":"mapping","reason":"...","mappingAfter":{"id":"m10","from":"嘚","to":"的","note":"火星文"}},
+  {"op":"add","target":"mapping","reason":"删除噪声符号","mappingAfter":{"id":"m11","from":"@","to":"","note":"去噪"}},
   {"op":"update","target":"mapping","reason":"...","mappingBefore":{"id":"m10"},"mappingAfter":{...完整映射...}},
   {"op":"delete","target":"mapping","reason":"...","mappingBefore":{"id":"m10"}}
 ]}
 
+映射的 to 留空表示"归一化时删除这个片段"（去噪符号、插入符都靠它）。
 规则 id 用形如 r010 的人可读短 id，映射 id 用 m10 的形式，且不要与当前语料库冲突。
 samples 只填你实际依据的消息 id；没有附带样本时不要填 samples。`
 
@@ -139,6 +145,42 @@ func ParseOperations(output string) ([]corpus.Operation, error) {
 			return nil, fmt.Errorf("第 %d 条建议不合法：%w", i+1, err)
 		}
 		ops = append(ops, op)
+	}
+	return ops, nil
+}
+
+// RecoverOperations 从被截断（或在半截处断掉）的输出里抢救出完整且合法的操作。
+// 模型经常在 max_tokens 处戛然而止，但前面那些完整的条目仍然可用；
+// 把它们全部丢掉，只会让管理员对着一个“JSON 不完整”的报错再白白等一次往返。
+func RecoverOperations(output string) ([]corpus.Operation, error) {
+	rest := output
+	if i := strings.Index(rest, `"operations"`); i >= 0 {
+		rest = rest[i:]
+	}
+	i := strings.Index(rest, "[")
+	if i < 0 {
+		return nil, fmt.Errorf("输出里没有 operations 数组")
+	}
+
+	// 用流式解码器逐条读：截断只会让最后一条 Decode 失败，前面的条目已经拿到了。
+	dec := json.NewDecoder(strings.NewReader(rest[i:]))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return nil, fmt.Errorf("输出里没有 operations 数组")
+	}
+	var ops []corpus.Operation
+	for dec.More() {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			break
+		}
+		op, err := parseOperation(raw)
+		if err != nil {
+			break
+		}
+		ops = append(ops, op)
+	}
+	if len(ops) == 0 {
+		return nil, fmt.Errorf("没有一条完整的操作")
 	}
 	return ops, nil
 }
@@ -341,14 +383,47 @@ type Fake struct {
 	Err error
 	// Requests 记录收到的请求，便于断言"未勾选时不传消息内容"。
 	Requests []Request
+
+	onExchange func(Exchange)
 }
 
 // Enabled 恒为 true。
 func (f *Fake) Enabled() bool { return true }
 
-// Draft 返回预置操作。
-func (f *Fake) Draft(_ context.Context, req Request) ([]corpus.Operation, error) {
+// ObserveExchange 让测试也能断言服务端确实拿到了请求体/响应体。
+func (f *Fake) ObserveExchange(fn func(Exchange)) { f.onExchange = fn }
+
+// ModelName 与真实实现一致，供界面展示。
+func (f *Fake) ModelName() string { return "fake" }
+
+// Draft 返回预置操作，并像真实实现一样上报一次“往返”。
+func (f *Fake) Draft(_ context.Context, req Request) (ops []corpus.Operation, err error) {
 	f.Requests = append(f.Requests, req)
+	started := time.Now()
+	defer func() {
+		if f.onExchange == nil {
+			return
+		}
+		response, _ := json.Marshal(map[string]any{"operations": ops})
+		ex := Exchange{
+			StartedAt:   started,
+			ElapsedMS:   time.Since(started).Milliseconds(),
+			URL:         "fake://chat/completions",
+			Model:       "fake",
+			Instruction: req.Instruction,
+			Samples:     len(req.Samples),
+			Status:      200,
+			Request:     BuildPrompt(req),
+			Response:    string(response),
+			Operations:  len(ops),
+		}
+		if err != nil {
+			ex.Status = 0
+			ex.Error = err.Error()
+		}
+		f.onExchange(ex)
+	}()
+
 	if f.Err != nil {
 		return nil, f.Err
 	}

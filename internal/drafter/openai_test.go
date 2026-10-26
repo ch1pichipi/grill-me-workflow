@@ -184,3 +184,66 @@ func TestNewAgentFromEnv(t *testing.T) {
 		t.Fatal("显式置空 AGENT_API_KEY 应禁用 agent")
 	}
 }
+
+// 截断仍然算"部分成功"：返回能救回的完整条目，并在 Exchange 里留下警告。
+func TestOpenAICompatibleDraftSalvagesTruncatedOutput(t *testing.T) {
+	truncated := `{"operations":[
+{"op":"add","target":"mapping","reason":"去掉@","mappingAfter":{"id":"m90","from":"@","to":""}},
+{"op":"add","target":"mapping","reason":"去掉#","mappingAfter":{"id":"m91","from":"#","to":""}},
+{"op":"add","target":"mapping","reason":"去`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{
+				"finish_reason": "length",
+				"message":       map[string]any{"content": truncated},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	var got Exchange
+	agent := &OpenAICompatible{
+		BaseURL: srv.URL,
+		APIKey:  "k",
+		Model:   "m",
+		HTTP:    srv.Client(),
+		OnExchange: func(ex Exchange) {
+			got = ex
+		},
+	}
+	ops, err := agent.Draft(context.Background(), Request{Instruction: "去掉符号"})
+	if err != nil {
+		t.Fatalf("截断时应返回救回的条目而不是报错: %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("应救回 2 条，实际 %d: %+v", len(ops), ops)
+	}
+	if !strings.Contains(got.Warning, "截断") || !strings.Contains(got.Warning, "2") {
+		t.Fatalf("Exchange 应带上截断警告: %+v", got.Warning)
+	}
+	if got.Error != "" {
+		t.Fatalf("救回条目时不应记为失败: %q", got.Error)
+	}
+}
+
+// 请求体里要带够输出预算（这个模型会先用大量 token 思考）。
+func TestOpenAICompatibleSendsMaxTokensBudget(t *testing.T) {
+	var got chatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"finish_reason":"stop","message":{"content":`+
+			`"{\"operations\":[]}"}}]}`)
+	}))
+	defer srv.Close()
+
+	agent := &OpenAICompatible{BaseURL: srv.URL, APIKey: "k", Model: "m", HTTP: srv.Client()}
+	if _, err := agent.Draft(context.Background(), Request{Instruction: "x"}); err == nil {
+		t.Fatal("空操作应报错")
+	}
+	if got.MaxTokens != DefaultAgentMaxTokens || DefaultAgentMaxTokens < 16384 {
+		t.Fatalf("max_tokens = %d，默认预算过小会被思考吃光", got.MaxTokens)
+	}
+}

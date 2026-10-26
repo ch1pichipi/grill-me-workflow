@@ -89,6 +89,7 @@
   .pill.ok { border-color: #2d4b33; color: #7ee787; }
   .pill.bad { border-color: #6b2b2b; color: #ff9c96; }
   .pill.info { border-color: #24425f; color: #79c0ff; }
+  .pill.warn { border-color: #5a4a25; color: #f0c674; }
   .mute-banner {
     margin-top: 8px; padding: 8px 10px; border-radius: 6px;
     border: 1px solid #6b2b2b; background: #2a1517; color: #ffb3ae;
@@ -130,6 +131,12 @@
   .chk input { width: auto; }
   .samples { font-size: 11px; color: var(--muted); }
   .hit-list { display: flex; gap: 5px; flex-wrap: wrap; }
+  .log-pre {
+    white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto;
+    background: #0c1015; border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px; margin: 4px 0; font-size: 11px; color: #b9c6d6;
+  }
+  .log-pre.bad { border-color: #6b2b2b; color: #ffb3ae; }
   tr.current td { background: #1b2734; }
   td .pill { white-space: nowrap; }
 </style>
@@ -248,7 +255,7 @@
         <div class="grid-3">
           <div><label for="mapping-id">映射 id</label><input id="mapping-id" type="text" placeholder="m06"></div>
           <div><label for="mapping-from">from（变形）</label><input id="mapping-from" type="text" placeholder="亻尔"></div>
-          <div><label for="mapping-to">to（标准形）</label><input id="mapping-to" type="text" placeholder="你"></div>
+          <div><label for="mapping-to">to（标准形；留空表示删除）</label><input id="mapping-to" type="text" placeholder="你，或留空删除"></div>
         </div>
         <label for="mapping-note">备注</label>
         <input id="mapping-note" type="text" placeholder="火星文 / 形近字 …">
@@ -259,27 +266,40 @@
       </div>
     </details>
 
-    <details>
+    <details id="agent-box">
       <summary>使用 agent 变更语料库</summary>
       <p class="tiny muted" style="margin:8px 0 4px">
         agent 只会产出草案，永远不会直接写语料库；草案由你逐条审批后提交。
       </p>
       <textarea id="agent-instruction" placeholder="例如：加一条藏头规则，拦住三行首字组成的辱骂；再补两个火星文映射" style="min-height:64px"></textarea>
       <label class="chk" style="margin-top:6px"><input id="agent-samples" type="checkbox"> 附带最近 30 条消息样本及判定</label>
-      <div class="row" style="margin-top:6px">
+      <div class="row wrap" style="margin-top:6px">
         <button id="agent-btn" class="primary">生成变更草案</button>
+        <button id="agent-cancel" style="display:none">取消等待</button>
         <span id="agent-hint" class="tiny muted"></span>
       </div>
+      <div id="agent-progress" class="tiny" style="margin-top:6px;display:none"></div>
+      <details id="agent-log-box" style="margin-top:8px">
+        <summary>agent 请求 / 响应日志 <span id="agent-log-count" class="pill info">0 次</span></summary>
+        <p class="tiny muted" style="margin:6px 0 4px">
+          模型调用发生在服务端（浏览器 devtools 的 Network 里看不到），
+          这里是服务端记录的真实请求体与响应体，同样的内容也会打到进程日志（stdout）。
+        </p>
+        <div id="agent-log"></div>
+      </details>
     </details>
 
     <details id="draft-box">
       <summary>草案审批 <span id="draft-count" class="pill info">无草案</span></summary>
       <div id="draft-list" style="margin-top:8px"></div>
       <div id="draft-footer" style="display:none">
-        <div class="row" style="margin-top:6px">
+        <div class="row wrap" style="margin-top:6px">
           <input id="draft-note" class="grow" type="text" placeholder="本次提交说明（会写进修订记录）">
+          <button id="draft-all">全选</button>
+          <button id="draft-delete" class="danger">删除勾选的草案</button>
           <button id="draft-submit" class="primary">提交选中的变更</button>
         </div>
+        <div id="draft-hint" class="tiny muted" style="margin-top:4px"></div>
       </div>
     </details>
 
@@ -319,9 +339,16 @@ const state = {
   revisions: [],
   stair: { durations: [], permanentThreshold: 5, formula: "" },
   agentEnabled: false,
+  agentModel: "",
+  agentRun: null,
+  agentResult: null,
+  agentError: "",
+  agentLog: [],
   stream: [],
   playerId: Number(localStorage.getItem("chatmod.playerId") || 0),
   draft: null,
+  draftChecked: [],
+  commitIndexes: null,
   problems: [],
   editingRule: null,
   editingMapping: null,
@@ -443,7 +470,15 @@ function handle(msg) {
       state.revisions = msg.revisions || [];
       state.stair = msg.stair || state.stair;
       state.agentEnabled = !!msg.agentEnabled;
+      state.agentModel = msg.agentModel || "";
+      state.agentLog = msg.agentLog || [];
       state.stream = msg.stream || [];
+      // 这条消息只会在（重新）连上时到达：上一个连接里的在途请求已经不可能再回包了，
+      // 不清掉运行态的话按钮会永远停在“生成中…”。
+      if (state.agentRun) {
+        state.agentRun = null;
+        state.agentError = "连接中断过，上一次生成的结果已丢失，请重新生成";
+      }
       if (!state.players.some((p) => p.id === state.playerId)) {
         state.playerId = state.players.length ? state.players[0].id : 0;
         localStorage.setItem("chatmod.playerId", String(state.playerId));
@@ -456,6 +491,7 @@ function handle(msg) {
       renderRevisions();
       renderStair();
       renderAgent();
+      renderAgentLog();
       renderDryRunSource();
       break;
 
@@ -509,13 +545,56 @@ function handle(msg) {
       renderRevisions();
       break;
 
-    case "draft":
+    case "draft.started":
+      // 模型往返要十几秒：先进入“运行中”状态并每秒刷新已等待时长。
+      state.agentRun = {
+        startedAt: Date.parse(msg.startedAt) || Date.now(),
+        instruction: msg.instruction || "",
+        includeSamples: !!msg.includeSamples,
+        model: msg.model || state.agentModel,
+      };
+      state.agentError = "";
+      renderAgent();
+      break;
+
+    case "draft": {
+      const run = state.agentRun;
+      const count = ((msg.draft && msg.draft.operations) || []).length;
+      state.agentRun = null;
+      state.agentError = "";
+      const lastLog = state.agentLog[state.agentLog.length - 1];
+      state.agentResult = {
+        count,
+        ms: run ? Date.now() - run.startedAt : null,
+        warning: lastLog && lastLog.warning ? lastLog.warning : "",
+      };
       state.draft = msg.draft;
+      state.draftChecked = ((msg.draft && msg.draft.operations) || []).map(() => true);
+      state.commitIndexes = null;
       state.problems = (msg.draft && msg.draft.problems) || [];
       renderDraft(true);
+      renderAgent();
+      // 草案区默认是收起的：自动展开，否则生成完也看不到结果。
+      $("draft-box").open = true;
+      if (count === 0) {
+        $("agent-log-box").open = true;
+        toast("agent 没有给出任何变更，展开 agent 日志看模型原始输出", true);
+      } else {
+        toast(`agent 已生成 ${count} 条建议，逐条审批后提交`);
+      }
+      break;
+    }
+
+    case "agent.log":
+      if (msg.exchange) {
+        state.agentLog.push(msg.exchange);
+        if (state.agentLog.length > 10) state.agentLog = state.agentLog.slice(-10);
+        renderAgentLog();
+      }
       break;
 
     case "draft.problems":
+      state.commitIndexes = null;
       state.problems = msg.problems || [];
       paintProblems();
       break;
@@ -527,11 +606,26 @@ function handle(msg) {
 
     case "error":
       toast(msg.message, true);
-      if (msg.problems && msg.problems.length) {
-        state.problems = msg.problems;
-        paintProblems();
-        renderCorpusErrors(msg.problems);
+      if (msg.source === "draft") {
+        // agent 链路的错误不消失：停在 agent 区的状态行上，方便对照下面的请求/响应日志。
+        state.agentRun = null;
+        state.agentError = msg.message;
+        $("agent-log-box").open = true;
+        renderAgent();
+        break;
       }
+      if (msg.problems && msg.problems.length) {
+        // 提交草案的报错里，problem.index 是相对“本次提交的那几条”算的，
+        // 必须映射回草案列表的下标，否则会把红框/禁用标到错误的卡片上。
+        const mapped = remapCommittedProblems(msg.problems);
+        if (mapped) {
+          state.problems = mapped;
+          paintProblems();
+        } else {
+          renderCorpusErrors(msg.problems);
+        }
+      }
+      state.commitIndexes = null;
       break;
 
     case "ack":
@@ -540,6 +634,8 @@ function handle(msg) {
 
     case "draft.committed":
       state.draft = null;
+      state.draftChecked = [];
+      state.commitIndexes = null;
       state.problems = [];
       renderDraft(true);
       toast(msg.note || "草案已提交");
@@ -852,7 +948,7 @@ function renderMappingList() {
   for (const m of state.corpus.mappings.slice().sort((a, b) => a.id.localeCompare(b.id))) {
     box.append(el("div", { class: "rule-line", style: "padding:4px 0;border-bottom:1px solid var(--line)" },
       el("span", { class: "mono tiny", text: m.id }),
-      el("span", { class: "grow", text: `${m.from} → ${m.to}${m.note ? " · " + m.note : ""}` }),
+      el("span", { class: "grow", text: `${m.from} → ${m.to || "（删除）"}${m.note ? " · " + m.note : ""}` }),
       el("button", { class: "small", text: "编辑", onclick: () => loadMappingIntoForm(m) }),
       el("button", { class: "small danger", text: "删除", onclick: () => deleteMapping(m) }),
     ));
@@ -990,10 +1086,112 @@ function deleteMapping(m) {
 // ---------- agent ----------
 function renderAgent() {
   const btn = $("agent-btn");
-  btn.disabled = !state.agentEnabled;
+  const running = state.agentRun;
+  btn.disabled = !state.agentEnabled || !!running;
+  btn.textContent = running
+    ? `生成中… ${((Date.now() - running.startedAt) / 1000).toFixed(0)}s`
+    : "生成变更草案";
   $("agent-hint").textContent = state.agentEnabled
     ? "agent 只产出草案，提交前由你逐条审批。"
     : "未配置 AGENT_API_KEY：agent 不可用，其余功能完全可用，可手工添加规则与映射。";
+  const stateLine = $("agent-state");
+  if (stateLine) {
+    stateLine.textContent = state.agentEnabled
+      ? "agent: " + (state.agentModel || "已配置")
+      : "agent: 未配置";
+  }
+  renderAgentProgress();
+}
+
+// 状态行：运行中显示已等待秒数，失败时把错误留在页面上（不只靠 4 秒的 toast）。
+function renderAgentProgress() {
+  const box = $("agent-progress");
+  if (!box) return;
+  const cancel = $("agent-cancel");
+  if (cancel) cancel.style.display = state.agentRun ? "" : "none";
+  if (state.agentRun) {
+    const secs = ((Date.now() - state.agentRun.startedAt) / 1000).toFixed(1);
+    box.style.display = "";
+    box.style.color = "#79c0ff";
+    box.textContent = `生成中… 已等待 ${secs}s｜请求已发往中转站`
+      + (state.agentRun.model ? `（模型 ${state.agentRun.model}）` : "")
+      + "，模型返回通常需要 10–30 秒；请求体与响应体会实时出现在下方日志里。";
+    return;
+  }
+  if (state.agentError) {
+    box.style.display = "";
+    box.style.color = "#ff9c96";
+    box.textContent = "上次生成失败：" + state.agentError + "（展开下方 agent 日志看请求体与响应体）";
+    return;
+  }
+  if (state.agentResult) {
+    box.style.display = "";
+    box.style.color = state.agentResult.warning ? "#f0c674" : "#7ee787";
+    box.textContent = `上次生成完成：${state.agentResult.count} 条建议`
+      + (state.agentResult.ms ? `，用时 ${(state.agentResult.ms / 1000).toFixed(1)}s` : "")
+      + (state.agentResult.warning ? `。注意：${state.agentResult.warning}` : "。");
+    return;
+  }
+  box.style.display = "none";
+  box.textContent = "";
+}
+
+function renderAgentLog() {
+  const box = $("agent-log");
+  const badge = $("agent-log-count");
+  if (!box || !badge) return;
+  badge.textContent = state.agentLog.length ? `${state.agentLog.length} 次` : "0 次";
+  box.textContent = "";
+  if (!state.agentLog.length) {
+    box.append(el("div", { class: "empty", text: "还没有 agent 请求" }));
+    return;
+  }
+  // 最新的在最上面
+  state.agentLog.slice().reverse().forEach((ex) => box.append(agentLogCard(ex)));
+}
+
+function agentLogCard(ex) {
+  const ok = !ex.error && ex.status === 200;
+  const card = el("div", { class: "card" });
+  const when = ex.startedAt ? new Date(ex.startedAt).toLocaleTimeString("zh-CN", { hour12: false }) : "";
+  card.append(el("div", { class: "row wrap" },
+    el("span", { class: "pill " + (ok ? "ok" : "bad"), text: ok ? "成功" : "失败" }),
+    ex.warning ? el("span", { class: "pill warn", text: "输出被截断" }) : null,
+    ex.status ? el("span", { class: "pill info", text: "HTTP " + ex.status }) : null,
+    el("span", { class: "tiny muted", text: `${when} · 用时 ${((ex.elapsedMs || 0) / 1000).toFixed(1)}s` }),
+    ex.model ? el("span", { class: "tiny muted", text: ex.model }) : null,
+    el("span", { class: "tiny muted", text: `${ex.operations || 0} 条操作` }),
+    el("button", { class: "small", text: "复制请求体", onclick: () => copyText(ex.request) }),
+    el("button", { class: "small", text: "复制响应体", onclick: () => copyText(ex.response) }),
+  ));
+  card.append(el("div", { class: "tiny muted", style: "margin-top:4px", text: "指令：" + (ex.instruction || "（空）") }));
+  if (ex.error) card.append(el("div", { class: "tiny", style: "color:#ff9c96", text: "错误：" + ex.error }));
+  if (ex.warning) card.append(el("div", { class: "tiny", style: "color:#f0c674", text: "注意：" + ex.warning }));
+  card.append(
+    el("label", { text: `请求体 · POST ${ex.url || ""}（${(ex.request || "").length} 字符）` }),
+    el("pre", { class: "log-pre", text: prettyJSON(ex.request) }),
+    el("label", { text: `响应体（${(ex.response || "").length} 字符）` }),
+    el("pre", { class: "log-pre" + (ex.error ? " bad" : ""), text: prettyJSON(ex.response) }),
+  );
+  return card;
+}
+
+function prettyJSON(text) {
+  if (!text) return "（空）";
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function copyText(text) {
+  if (!text) { toast("没有内容可复制", true); return; }
+  if (!navigator.clipboard) { toast("当前环境不支持剪贴板", true); return; }
+  navigator.clipboard.writeText(text).then(
+    () => toast("已复制 " + text.length + " 字符"),
+    (err) => toast("复制失败：" + err, true),
+  );
 }
 
 // ---------- 草案审批 ----------
@@ -1020,6 +1218,12 @@ function renderDraft(rebuild) {
   );
   box.append(meta);
 
+  if (!state.draft.operations.length) {
+    box.append(el("div", { class: "empty", text: "agent 没有给出任何变更：可以把指令说得更具体，或展开“使用 agent 变更语料库”里的请求/响应日志看模型原始输出。" }));
+    footer.style.display = "none";
+    return;
+  }
+
   state.draft.operations.forEach((op, index) => {
     box.append(draftCard(op, index));
   });
@@ -1033,9 +1237,12 @@ function draftCard(op, index) {
   const head = el("div", { class: "row wrap" });
   const checkbox = el("input", {
     type: "checkbox",
-    checked: true,
+    checked: state.draftChecked[index] !== false,
     "data-op-check": String(index),
-    onchange: () => paintProblems(),
+    onchange: (e) => {
+      state.draftChecked[index] = e.target.checked;
+      paintProblems();
+    },
   });
   head.append(
     el("label", { class: "chk" }, checkbox, "勾选"),
@@ -1048,11 +1255,9 @@ function draftCard(op, index) {
 
   card.append(el("div", { class: "tiny muted", style: "margin:4px 0", text: "理由：" + (op.reason || "（agent 未给出理由）") }));
 
-  const problems = state.problems.find((p) => p.index === index);
+  const problems = problemAt(index);
   const problemBox = el("div", { class: "tiny", "data-problem-for": String(index), style: "color:#ff9c96" });
-  if (problems && problems.messages && problems.messages.length) {
-    problemBox.textContent = problems.messages.join("；");
-  }
+  if (problems) problemBox.textContent = problems.messages.join("；");
   card.append(problemBox);
 
   if (op.op !== "delete") {
@@ -1163,40 +1368,126 @@ function scheduleValidate() {
 
 function paintProblems() {
   if (!state.draft) return;
-  const ops = state.draft.operations;
   const cards = $("draft-list").querySelectorAll("[data-op-index]");
   cards.forEach((card) => {
     const index = Number(card.getAttribute("data-op-index"));
-    const problem = state.problems.find((p) => p.index === index);
-    const bad = !!(problem && problem.messages && problem.messages.length);
+    const problem = problemAt(index);
+    const bad = !!problem;
     card.classList.toggle("bad", bad);
     const box = card.querySelector(`[data-problem-for="${index}"]`);
     if (box) {
       box.textContent = bad ? problem.messages.join("；") : "";
     }
+    // 勾选框永远可点：没通过校验的条目也要能“勾上再删掉”，否则会卡死。
     const chk = card.querySelector(`[data-op-check="${index}"]`);
     if (chk) {
-      chk.disabled = bad;
-      if (bad) chk.checked = false;
+      const want = state.draftChecked[index] !== false;
+      if (chk.checked !== want) chk.checked = want;
+      chk.disabled = false;
     }
   });
+  updateDraftButtons();
+}
+
+// 某条草案的校验问题（没有就返回 null）。
+function problemAt(index) {
+  const p = state.problems.find((x) => x.index === index);
+  return p && p.messages && p.messages.length ? p : null;
+}
+
+// 本次勾选的草案下标。
+function selectedDraftIndexes() {
+  if (!state.draft) return [];
+  return state.draft.operations.map((_, i) => i).filter((i) => state.draftChecked[i] !== false);
+}
+
+function updateDraftButtons() {
+  const selected = selectedDraftIndexes();
+  const total = state.draft ? state.draft.operations.length : 0;
+  const bad = selected.filter((i) => problemAt(i)).length;
+  const del = $("draft-delete");
+  const sub = $("draft-submit");
+  const all = $("draft-all");
+  if (all) {
+    all.disabled = total === 0;
+    all.textContent = selected.length === total && total > 0 ? "全不选" : "全选";
+  }
+  if (del) {
+    del.disabled = selected.length === 0;
+    del.textContent = selected.length ? `删除勾选的草案（${selected.length}）` : "删除勾选的草案";
+  }
+  if (sub) {
+    sub.disabled = selected.length === 0;
+    sub.textContent = selected.length ? `提交选中的变更（${selected.length}）` : "提交选中的变更";
+  }
+  const hint = $("draft-hint");
+  if (hint) {
+    if (!selected.length) hint.textContent = "没有勾选任何草案；勾选后可以提交，也可以从草案里删掉。";
+    else if (bad) hint.textContent = `已勾选 ${selected.length} 条，其中 ${bad} 条未通过校验：修正或删掉它们之后再提交，否则整次提交会被拒绝。`;
+    else hint.textContent = `已勾选 ${selected.length} 条；删除只影响本次草案，不会写语料库。`;
+  }
+}
+
+// 一键全选 / 全不选（全部已勾选时再点一次就清空）。
+function toggleAllDrafts() {
+  if (!state.draft) return;
+  const total = state.draft.operations.length;
+  const selectAll = selectedDraftIndexes().length !== total;
+  state.draftChecked = state.draft.operations.map(() => selectAll);
+  paintProblems();
 }
 
 function submitDraft() {
   if (!state.draft) return;
-  const selected = [];
-  const cards = $("draft-list").querySelectorAll("[data-op-index]");
-  cards.forEach((card) => {
-    const index = Number(card.getAttribute("data-op-index"));
-    const chk = card.querySelector(`[data-op-check="${index}"]`);
-    if (chk && chk.checked && !chk.disabled) selected.push(state.draft.operations[index]);
-  });
-  if (!selected.length) { toast("没有勾选任何变更", true); return; }
-  send({
+  const indexes = selectedDraftIndexes();
+  if (!indexes.length) { toast("没有勾选任何变更", true); return; }
+  const operations = indexes.map((i) => state.draft.operations[i]);
+  // 记住“这次提交的是哪几条”，服务端回来的 problem.index 要按它映射回列表下标。
+  state.commitIndexes = indexes.slice();
+  if (!send({
     type: "draft.commit",
-    operations: selected,
+    operations,
     note: $("draft-note").value.trim() || "通过 agent 草案提交",
+  })) {
+    state.commitIndexes = null;
+  }
+}
+
+function deleteDraftSelected() {
+  if (!state.draft) return;
+  const remove = new Set(selectedDraftIndexes());
+  if (!remove.size) { toast("没有勾选任何草案", true); return; }
+  if (!confirm(`从草案里删除勾选的 ${remove.size} 条建议？（不写语料库，可重新生成）`)) return;
+
+  const operations = [];
+  const checked = [];
+  state.draft.operations.forEach((op, i) => {
+    if (remove.has(i)) return;
+    operations.push(op);
+    checked.push(state.draftChecked[i] !== false);
   });
+  state.draft.operations = operations;
+  state.draftChecked = checked;
+  // 删完下标全变了，旧校验结果失效，等服务端按新列表重算。
+  state.problems = [];
+  state.commitIndexes = null;
+  if (!operations.length) state.draft = null;
+  renderDraft(true);
+  toast(`已从草案里删除 ${remove.size} 条`);
+  send({ type: "draft.sync", operations });
+}
+
+// 把“提交子集”的 problems 映射回草案列表下标；不是本次草案提交就返回 null。
+function remapCommittedProblems(problems) {
+  const map = state.commitIndexes;
+  if (!map || !map.length) return null;
+  const out = [];
+  for (const p of problems) {
+    const index = map[p.index];
+    if (index === undefined) continue;
+    out.push({ index, messages: p.messages || [] });
+  }
+  return out;
 }
 
 // ---------- 修订 ----------
@@ -1338,15 +1629,49 @@ $("rule-cancel").addEventListener("click", resetRuleForm);
 $("mapping-save").addEventListener("click", saveMapping);
 $("mapping-cancel").addEventListener("click", resetMappingForm);
 
-$("agent-btn").addEventListener("click", () => {
+// 一次往返的等待上限：服务端 HTTP 超时是 180 秒，超过这个时间还没回包，
+// 界面自己也要能脱身，否则按钮会一直停在“生成中…”再也发不出请求。
+const AGENT_WAIT_LIMIT_MS = 150000;
+
+function runningTooLong(run) {
+  return !!run && Date.now() - run.startedAt > AGENT_WAIT_LIMIT_MS;
+}
+
+function cancelDraftRun(note) {
+  if (!state.agentRun) return;
+  state.agentRun = null;
+  state.agentError = note || "已取消等待（服务端若最后返回，结果仍会显示）";
+  renderAgent();
+}
+
+function startDraft() {
+  if (state.agentRun && !runningTooLong(state.agentRun)) {
+    const secs = ((Date.now() - state.agentRun.startedAt) / 1000).toFixed(0);
+    toast(`上一次生成还没返回（已等待 ${secs}s）：可以等它返回，或点“取消等待”后重新发送`, true);
+    return;
+  }
+  if (state.agentRun) cancelDraftRun("等待超过 150 秒，已放弃等待上一次生成；可以重新发送");
   const instruction = $("agent-instruction").value.trim();
   if (!instruction) { toast("先写清楚要让 agent 做什么", true); return; }
-  $("agent-btn").disabled = true;
-  send({ type: "draft.request", instruction, includeSamples: $("agent-samples").checked });
-  setTimeout(() => { $("agent-btn").disabled = !state.agentEnabled; }, 300);
+  const includeSamples = $("agent-samples").checked;
+  if (!send({ type: "draft.request", instruction, includeSamples })) return;
+  // 先自己进入运行态（服务端的 draft.started 到达后会校对开始时间），
+  // 否则请求发出的那一刻按钮就恢复可点，看起来像什么都没发生。
+  state.agentRun = { startedAt: Date.now(), instruction, includeSamples, model: state.agentModel };
+  state.agentError = "";
+  state.agentResult = null;
+  renderAgent();
+}
+
+$("agent-btn").addEventListener("click", startDraft);
+$("agent-cancel").addEventListener("click", () => {
+  cancelDraftRun("已取消等待（服务端若最后返回，结果仍会显示）");
+  toast("已取消等待，可以重新发送请求");
 });
 
 $("draft-submit").addEventListener("click", submitDraft);
+$("draft-all").addEventListener("click", toggleAllDrafts);
+$("draft-delete").addEventListener("click", deleteDraftSelected);
 
 $("dryrun-source").addEventListener("change", (e) => {
   const seq = Number(e.target.value);
@@ -1375,6 +1700,17 @@ setInterval(() => {
   renderMuteStatus();
   renderSendState();
 }, 1000);
+
+// agent 运行中：每 0.5 秒刷新“已等待 N 秒”。
+setInterval(() => {
+  if (!state.agentRun) return;
+  if (runningTooLong(state.agentRun)) {
+    cancelDraftRun("等待超过 150 秒仍未返回（可能网络或中转站卡住），已放弃等待；可以重新发送");
+    toast("上一次生成等待超时，已放弃等待，请重新发送", true);
+    return;
+  }
+  renderAgent();
+}, 500);
 
 // 启动
 updateConn();

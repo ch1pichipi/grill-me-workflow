@@ -138,3 +138,32 @@ func TestBuildPromptOmitsSamplesWhenNone(t *testing.T) {
 		t.Fatalf("附带样本时应传入文本: %s", prompt)
 	}
 }
+
+// 模型在 max_tokens 处戛然而止时，前面完整的条目要能救回来——
+// 否则管理员只能对着"JSON 不完整"再等一次往返。
+func TestRecoverOperationsSalvagesTruncatedOutput(t *testing.T) {
+	truncated := `{"operations":[
+{"op":"add","target":"mapping","reason":"去掉@","mappingAfter":{"id":"m90","from":"@","to":"","note":"噪声"}},
+{"op":"add","target":"mapping","reason":"去掉#","mappingAfter":{"id":"m91","from":"#","to":"","note":"噪声"}},
+{"op":"add","target":"mapping","reason":"去掉`
+
+	if _, err := ParseOperations(truncated); err == nil {
+		t.Fatal("严格解析应失败")
+	}
+	ops, err := RecoverOperations(truncated)
+	if err != nil {
+		t.Fatalf("应能救回完整条目: %v", err)
+	}
+	if len(ops) != 2 || ops[0].MappingAfter.ID != "m90" || ops[1].MappingAfter.ID != "m91" {
+		t.Fatalf("救回的条目不对: %+v", ops)
+	}
+
+	// 没有任何一条完整时不能假装成功。
+	if _, err := RecoverOperations(`{"operations":[{"op":"add","target":"mapping","mappingAft`); err == nil {
+		t.Fatal("没有完整条目时应报错")
+	}
+	// 完全不是 JSON 也不能瞎猜。
+	if _, err := RecoverOperations("抱歉，我做不到"); err == nil {
+		t.Fatal("非 JSON 应报错")
+	}
+}

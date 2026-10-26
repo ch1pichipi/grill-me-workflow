@@ -81,6 +81,11 @@ func (s *session) sendErr(msg string, problems ...corpus.Problem) {
 	s.send(errorEvent{Type: "error", Message: msg, Problems: problems})
 }
 
+// sendErrFrom 标明错误来源，界面据此把错误显示在对应区域（例如 agent 区）。
+func (s *session) sendErrFrom(source, msg string, problems ...corpus.Problem) {
+	s.send(errorEvent{Type: "error", Message: msg, Problems: problems, Source: source})
+}
+
 func (s *session) writeLoop(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -209,17 +214,44 @@ func (s *session) handle(ctx context.Context, msg clientMsg) {
 		s.send(ackEvent{Type: "ack", Note: "语料库已更新"})
 
 	case "draft.request":
+		// 先告诉前端"已经发出去了"：模型往返通常要 10–30 秒，
+		// 没有这条事件界面就只能干等，看起来像没反应。
+		s.send(draftStartedEvent{
+			Type:           "draft.started",
+			Instruction:    msg.Instruction,
+			IncludeSamples: msg.IncludeSamples,
+			Model:          s.svc.AgentModel(),
+			StartedAt:      s.svc.now(),
+		})
+		log.Printf("草案请求：模型=%s 附带样本=%v 指令=%q", s.svc.AgentModel(), msg.IncludeSamples, msg.Instruction)
 		draft, err := s.svc.Draft(ctx, msg.Instruction, msg.IncludeSamples)
 		if err != nil {
-			s.sendErr(err.Error())
+			log.Printf("草案生成失败: %v", err)
+			s.sendErrFrom("draft", err.Error())
 			return
 		}
+		log.Printf("草案生成完成：%d 条建议", len(draft.Operations))
 		s.draft = draft
 		s.send(draftEvent{Type: "draft", Draft: draft})
 
 	case "draft.validate":
 		problems := s.svc.ValidateOps(msg.Operations)
 		s.send(draftProblemsEvent{Type: "draft.problems", Problems: problems})
+
+	case "draft.sync":
+		// 管理员在前端删掉了部分草案条目：用这份列表替换会话里的草稿，
+		// 让后续试跑看到的是同一条草案。草案只在内存，绝不写语料库。
+		if len(msg.Operations) == 0 {
+			s.draft = nil
+			s.send(draftProblemsEvent{Type: "draft.problems"})
+			return
+		}
+		if s.draft == nil {
+			s.draft = &Draft{CreatedAt: time.Now()}
+		}
+		s.draft.Operations = msg.Operations
+		s.draft.Problems = s.svc.ValidateOps(msg.Operations)
+		s.send(draftProblemsEvent{Type: "draft.problems", Problems: s.draft.Problems})
 
 	case "draft.commit":
 		if _, problems, err := s.svc.CommitOps(msg.Operations, msg.Note); err != nil {
@@ -236,7 +268,7 @@ func (s *session) handle(ctx context.Context, msg clientMsg) {
 		}
 		ops := msg.Operations
 		if len(ops) == 0 && s.draft != nil {
-			// 未显式传操作时，用会话里的草稿状态（含管理员编辑过的 after）。
+			// 未显式传操作时，用会话里的草稿状态（含管理员编辑/删除后的列表）。
 			ops = s.draft.Operations
 		}
 		res, err := s.svc.DryRun(playerID, msg.Text, ops)

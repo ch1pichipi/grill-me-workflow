@@ -302,9 +302,9 @@ func TestValidateOp(t *testing.T) {
 			wantSubstr: "from 不能为空",
 		},
 		{
-			name:       "映射 to 为空",
-			op:         Operation{Op: OpAdd, Target: TargetMapping, MappingAfter: &moderation.Mapping{ID: "m10", From: "尔", To: ""}},
-			wantSubstr: "to 不能为空",
+			name:       "映射 from 与 to 相同",
+			op:         Operation{Op: OpAdd, Target: TargetMapping, MappingAfter: &moderation.Mapping{ID: "m10", From: "尔", To: "尔"}},
+			wantSubstr: "不会产生任何效果",
 		},
 		{
 			name:       "新增映射 id 冲突",
@@ -384,5 +384,14 @@ func TestApplyCheckedSkipsInvalid(t *testing.T) {
 	}
 	if _, ok := next.RuleByID("r031"); ok {
 		t.Fatal("未通过校验的操作不应被应用")
+	}
+}
+
+// 删除噪声符号只能靠"to 留空"的映射表达，必须算合法操作。
+func TestValidateEmptyToMappingIsDeletion(t *testing.T) {
+	cur := Corpus{}
+	op := Operation{Op: OpAdd, Target: TargetMapping, MappingAfter: &moderation.Mapping{ID: "m06", From: "@", To: "", Note: "去噪"}}
+	if problems := ValidateOp(cur, op); len(problems) != 0 {
+		t.Fatalf("to 留空应合法（表示删除），实际: %v", problems)
 	}
 }
