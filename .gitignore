@@ -54,3 +54,6 @@ Thumbs.db
 *.db-shm
 *.db-wal
 .tmp-run/
+
+# 压测脚本的输出明细
+loadtest-*.json

@@ -89,11 +89,15 @@ type StreamEntry struct {
 
 // SendResult 是一次发送的结果，回给发送方。
 type SendResult struct {
-	Entry           StreamEntry        `json:"entry"`
-	Verdict         moderation.Verdict `json:"verdict"`
-	Rejected        bool               `json:"rejected"`
-	RejectReason    string             `json:"rejectReason,omitempty"`
-	MuteRemainingMS int64              `json:"muteRemainingMs,omitempty"`
+	Entry   StreamEntry        `json:"entry"`
+	Verdict moderation.Verdict `json:"verdict"`
+	// JudgeMS 是服务端处理这一条消息的耗时（毫秒，含入库与处罚判定，不含网络、不含排队等锁）。
+	// 压测脚本用它把"单条处理成本"和"端到端往返"分开看；
+	// 注意别和 Entry.DurationMS 混了，后者是禁言时长。
+	JudgeMS         float64 `json:"judgeMs"`
+	Rejected        bool    `json:"rejected"`
+	RejectReason    string  `json:"rejectReason,omitempty"`
+	MuteRemainingMS int64   `json:"muteRemainingMs,omitempty"`
 }
 
 // Change 是一条修订带来的差异（人可读）。
@@ -563,7 +567,7 @@ func (s *Service) Lift(playerID int64, reason string) error {
 // ---------- 发送与判定 ----------
 
 // Send 处理一次聊天发送。
-func (s *Service) Send(playerID int64, rawText string) (SendResult, error) {
+func (s *Service) Send(playerID int64, rawText string) (res SendResult, err error) {
 	text, truncated := truncateRunes(strings.TrimSpace(rawText), MaxMessageRunes)
 	if text == "" {
 		return SendResult{}, fmt.Errorf("消息不能为空")
@@ -571,6 +575,12 @@ func (s *Service) Send(playerID int64, rawText string) (SendResult, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// 只量锁内真正干活的耗时：等锁的时间算排队，端到端往返里自然会体现出来。
+	started := time.Now()
+	defer func() {
+		res.JudgeMS = float64(time.Since(started).Microseconds()) / 1000
+	}()
 
 	now := s.now()
 	p, ok, err := s.st.Player(playerID)

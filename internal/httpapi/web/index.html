@@ -124,6 +124,10 @@
   }
   #toast div.bad { background: #3a1d1f; border-color: #7a2c2c; }
   .empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+  /* 语料库列表：最多露出 LIST_VISIBLE_ROWS 行，多出来的滚（语料库变大后不至于把页面撑爆） */
+  .list-scroll { overflow-y: auto; overscroll-behavior: contain; }
+  .list-scroll:focus-visible { outline: 1px solid var(--accent, #2f5f8f); outline-offset: 2px; }
+  .list-more { color: var(--muted); font-size: 11px; padding: 4px 0 2px; }
   .rule-line { display: flex; gap: 6px; align-items: baseline; }
   .rule-line .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rule-off { opacity: .5; }
@@ -209,7 +213,8 @@
       </div>
 
       <h3>规则</h3>
-      <div id="rule-list"></div>
+      <div id="rule-list" class="list-scroll"></div>
+      <div id="rule-more" class="list-more"></div>
       <div class="card">
         <div id="rule-form-title" class="tiny muted">新增规则</div>
         <div class="grid-2">
@@ -249,7 +254,8 @@
       </div>
 
       <h3>归一化映射</h3>
-      <div id="mapping-list"></div>
+      <div id="mapping-list" class="list-scroll"></div>
+      <div id="mapping-more" class="list-more"></div>
       <div class="card">
         <div id="mapping-form-title" class="tiny muted">新增映射</div>
         <div class="grid-3">
@@ -921,6 +927,26 @@ function renderCorpus() {
   renderDryRunSource();
 }
 
+// 列表默认只露出 5 行，避免语料库长大后把下面的表单挤出屏幕。
+// 用真实行高算高度（r.description 换行、字体缩放都能自适应），而不是写死像素。
+const LIST_VISIBLE_ROWS = 5;
+
+function fitListScroll(box, moreBox) {
+  box.style.maxHeight = "";
+  const rows = [...box.children].filter((c) => !c.classList.contains("empty"));
+  const hidden = rows.length - LIST_VISIBLE_ROWS;
+  if (hidden <= 0) {
+    moreBox.textContent = "";
+    box.tabIndex = -1;
+    return;
+  }
+  let height = 0;
+  for (let i = 0; i < LIST_VISIBLE_ROWS; i++) height += rows[i].offsetHeight;
+  box.style.maxHeight = height + "px";
+  box.tabIndex = 0;
+  moreBox.textContent = `共 ${rows.length} 行，已显示前 ${LIST_VISIBLE_ROWS} 行 · 滚动查看（↓ ${hidden} 行）`;
+}
+
 function renderRuleList() {
   const box = $("rule-list");
   box.textContent = "";
@@ -937,6 +963,7 @@ function renderRuleList() {
     );
     box.append(line);
   }
+  fitListScroll(box, $("rule-more"));
 }
 
 function renderMappingList() {
@@ -953,6 +980,7 @@ function renderMappingList() {
       el("button", { class: "small danger", text: "删除", onclick: () => deleteMapping(m) }),
     ));
   }
+  fitListScroll(box, $("mapping-more"));
 }
 
 function loadRuleIntoForm(r) {
@@ -1711,6 +1739,16 @@ setInterval(() => {
   }
   renderAgent();
 }, 500);
+
+// 窗口尺寸变化后行高会变，重新按 5 行裁剪（语料库列表不需要重渲染）
+let refitTimer = 0;
+addEventListener("resize", () => {
+  clearTimeout(refitTimer);
+  refitTimer = setTimeout(() => {
+    fitListScroll($("rule-list"), $("rule-more"));
+    fitListScroll($("mapping-list"), $("mapping-more"));
+  }, 150);
+});
 
 // 启动
 updateConn();

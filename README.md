@@ -112,3 +112,20 @@ go test ./...
 - `internal/httpapi`：发送/禁言/计数/试跑/修订/草案的服务层测试，
   以及一条端到端冒烟（临时 SQLite → 起 httptest → 连 WS → 发违规消息 → 断言判定与禁言
   → 断言禁言期间再发被拒）。
+
+## 压力测试
+
+`scripts/loadtest-chatmod.mjs` 模拟 N 个玩家各发 M 条消息（最后一条是违禁消息），
+只依赖 Node 22+（自带 WebSocket），不需要安装依赖：
+
+```bash
+# 玩家先自己建好；不够时加 --create-missing 让脚本补建
+node scripts/loadtest-chatmod.mjs --players=10 --messages=20 --base=http://127.0.0.1:8043
+```
+
+输出消息总数/接受/拒绝、违禁命中数、总耗时与吞吐，并把
+**服务端单条处理耗时**（`result.judgeMs`，不含排队与网络）和**端到端往返**分开报
+（p50/p95/p99/max）。明细写入 `loadtest-chatmod-<时间>.json`。
+
+对照组 `pi-chat-content-moderation-system` 的等价脚本是该仓库的
+`scripts/loadtest-pi-chat.mjs`，字段命名与本脚本一致，便于并排看。
