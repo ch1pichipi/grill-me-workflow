@@ -17,11 +17,11 @@ import (
 	"chatmod/internal/corpus"
 )
 
-// 默认的中转站配置（可用环境变量覆盖；把 AGENT_API_KEY 显式设为空则禁用 agent）。
+// 默认的中转站配置（可用环境变量覆盖）。API key 没有内置默认值：
+// 必须由环境变量注入，把 AGENT_API_KEY 显式设为空则禁用 agent。
 const (
 	DefaultAgentName    = "opencode-go"
 	DefaultAgentBaseURL = "https://opencode.ai/zen/go/v1"
-	DefaultAgentAPIKey  = "oc_sk_43205309b565_-jhE0mv1gzfQiTwxCQZAmLj1CfNEucrW"
 	DefaultAgentModel   = "deepseek-v4.1-flash"
 	// DefaultAgentMaxTokens 给足输出预算：这个模型会先输出很长的 reasoning_content，
 	// 8k 的预算在"一次加十几条映射"这种请求上会被思考吃光，正文因此被截断。
@@ -75,19 +75,18 @@ type Exchange struct {
 	Warning string `json:"warning,omitempty"`
 }
 
-// NewAgentFromEnv 读取 agent 配置。环境变量未设置时使用上面的默认值；
-// 显式设置 AGENT_API_KEY="" 表示禁用 agent（按钮禁用并提示手工编辑语料库）。
+// NewAgentFromEnv 读取 agent 配置。
+//
+// API key 只从 AGENT_API_KEY 读取，没有内置默认值：仓库里永远不该出现 key，
+// 未注入时 agent 保持禁用（按钮禁用并提示手工编辑语料库）。
 func NewAgentFromEnv() *OpenAICompatible {
 	c := &OpenAICompatible{
 		Name:    strings.TrimSpace(envOr("AGENT_NAME", DefaultAgentName)),
 		BaseURL: strings.TrimRight(envOr("AGENT_BASE_URL", DefaultAgentBaseURL), "/"),
-		APIKey:  DefaultAgentAPIKey,
+		APIKey:  strings.TrimSpace(os.Getenv("AGENT_API_KEY")),
 		Model:   envOr("AGENT_MODEL", DefaultAgentModel),
 		Session: os.Getenv("AGENT_SESSION"),
 		HTTP:    &http.Client{Timeout: 180 * time.Second},
-	}
-	if v, ok := os.LookupEnv("AGENT_API_KEY"); ok {
-		c.APIKey = strings.TrimSpace(v)
 	}
 	if v := strings.TrimSpace(os.Getenv("AGENT_MAX_TOKENS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

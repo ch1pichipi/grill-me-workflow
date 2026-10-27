@@ -44,17 +44,39 @@ type corpusEvent struct {
 }
 
 type draftEvent struct {
-	Type  string `json:"type"`
-	Draft *Draft `json:"draft"`
+	Type      string `json:"type"`
+	RequestID string `json:"requestId,omitempty"`
+	Draft     *Draft `json:"draft"`
 }
 
 // draftStartedEvent 让界面在等待模型（动辄十几秒）时能立刻显示"正在运行"。
+// RequestID 用于把取消、失败与结果对回同一次请求。
 type draftStartedEvent struct {
 	Type           string    `json:"type"`
+	RequestID      string    `json:"requestId,omitempty"`
 	Instruction    string    `json:"instruction"`
 	IncludeSamples bool      `json:"includeSamples"`
 	Model          string    `json:"model"`
 	StartedAt      time.Time `json:"startedAt"`
+}
+
+// draftBusyEvent 表示服务端已经有一次生成在途：不会再次调用模型。
+// 界面据此把"生成中"状态恢复成那条在途请求，而不是把按钮放回可点。
+type draftBusyEvent struct {
+	Type           string    `json:"type"`
+	RequestID      string    `json:"requestId,omitempty"`
+	Instruction    string    `json:"instruction"`
+	IncludeSamples bool      `json:"includeSamples"`
+	Model          string    `json:"model"`
+	StartedAt      time.Time `json:"startedAt"`
+	ElapsedMS      int64     `json:"elapsedMs"`
+}
+
+// draftCancelledEvent 确认服务端已中止在途的模型请求（请求上下文被取消）。
+type draftCancelledEvent struct {
+	Type      string `json:"type"`
+	RequestID string `json:"requestId,omitempty"`
+	Note      string `json:"note,omitempty"`
 }
 
 // agentLogEvent 推送一次 agent 往返（请求体/响应体），供界面上的排障日志使用。
@@ -80,9 +102,10 @@ type ackEvent struct {
 }
 
 type errorEvent struct {
-	Type     string           `json:"type"`
-	Message  string           `json:"message"`
-	Problems []corpus.Problem `json:"problems,omitempty"`
+	Type      string           `json:"type"`
+	Message   string           `json:"message"`
+	RequestID string           `json:"requestId,omitempty"`
+	Problems  []corpus.Problem `json:"problems,omitempty"`
 	// Source 标明错误来自哪条链路（例如 draft），界面据此把错误显示在 agent 区。
 	Source string `json:"source,omitempty"`
 }

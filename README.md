@@ -11,7 +11,15 @@
 ## 跑起来
 
 ```bash
-go run .                # 默认 http://localhost:8043 ，数据落在 ./chatmod.db
+# 先注入 key（没有内置默认值；不注入则 agent 禁用，其余功能正常）
+export AGENT_API_KEY='...'     # Windows PowerShell: $env:AGENT_API_KEY = '...'
+go run .                       # 默认 http://localhost:8043 ，数据落在 ./chatmod.db
+```
+
+Windows 上可以直接从本机 pi 配置读 key（key 不进仓库、不落盘）：
+
+```powershell
+.\scripts\run-with-agent.ps1
 ```
 
 或：
@@ -22,6 +30,9 @@ go build ./cmd/server && ./server
 
 浏览器打开页面后先建一个玩家，然后就能发消息。不需要 node、不需要 CGO。
 
+> 安全：仓库里不允许出现任何 key。旧 key 已经进过 Git 历史，必须先在控制台吊销，
+> 再按 [`docs/密钥管理.md`](docs/密钥管理.md) 注入新 key 并清理历史。**改代码不能替代吊销。**
+
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
@@ -30,7 +41,7 @@ go build ./cmd/server && ./server
 | `DB_PATH` | `chatmod.db` | SQLite 文件（表结构在启动时 `CREATE TABLE IF NOT EXISTS`） |
 | `AGENT_NAME` | `opencode-go` | 中转站名字，只用于日志 |
 | `AGENT_BASE_URL` | `https://opencode.ai/zen/go/v1` | OpenAI 兼容中转站地址（请求 `{base}/chat/completions`） |
-| `AGENT_API_KEY` | 内置默认值 | 显式设为空则禁用 agent 并提示，其余功能完全可用 |
+| `AGENT_API_KEY` | **无默认值** | 必须由环境变量注入；未设置/显式置空则禁用 agent 并提示，其余功能完全可用 |
 | `AGENT_MODEL` | `deepseek-v4.1-flash` | 模型名 |
 | `AGENT_SESSION` | 进程启动时随机生成 | 作为 `x-opencode-session` 头发送（该中转站要求） |
 | `AGENT_MAX_TOKENS` | `16384` | 单次输出预算；这个模型会先输出很长的 reasoning，8k 预算常被思考吃光导致正文截断 |
@@ -46,14 +57,20 @@ go build ./cmd/server && ./server
 3. **管理员 · 语料库**：规则与映射的手工增删改、agent 草案审批、修订列表与回滚、
    试跑面板、只读阶梯。
 
-生成草案时按钮会变成「生成中… Ns」并禁用（模型往返通常 8–30 秒），同时可以「取消等待」；
-等待超过 150 秒或连接中断时界面会自己放弃等待，按钮一定回到可点状态，不会卡在「生成中…」。
+生成草案时按钮会变成「生成中… Ns」并禁用（模型往返通常 8–30 秒），同时可以「取消等待」。
+「取消等待」会真的发一条 `draft.cancel` 到服务端，中止在途 HTTP 请求并释放「进行中」闸门；
+服务端自己也会拒绝第二条 `draft.request`（只回 `draft.busy`），不是只靠前端防重复。
+等待超过 150 秒或连接中断时界面会自己取消并放弃等待，按钮一定回到可点状态，
+不会卡在「生成中…」。模型往返在后台 goroutine 里跑，同一条连接上后发的聊天消息不会被它阻塞。
 完成后草案区自动展开。每次往返的**请求体与响应体**会同时打到进程日志和页面上的
 「agent 请求 / 响应日志」面板——因为模型调用发生在服务端，浏览器 devtools 的
 Network 面板看不到它。输出被 `max_tokens` 截断时不会整批作废：已完整的建议保留下来，
 状态行和日志会标明「只保留了前 N 条」。
 
 页面上没有任何需要刷新才能看到的变化：判定、禁言生效/到期、语料库提交全部走 WebSocket。
+每个连接的待发队列区分两类事件：本次请求的直接回包（`result` / `draft` / `error` / `ack`）
+永不静默丢弃（队列满时背压，超时才断开）；广播事件积压时服务端主动断开，
+浏览器自动重连并拿到 `bootstrap` 全量状态重新同步，避免界面漏事件却以为是最新的。
 
 ## 验收
 
@@ -61,9 +78,10 @@ Network 面板看不到它。输出被 `max_tokens` 截断时不会整批作废�
 
 - 第 2–6 步（1min → 1h → 1d → 3d → 永久）：发同一条 L1 规则消息，每次提前解除后再发，
   观察全局流里的时长与玩家列表里的 7 天/终身次数。
-- 第 7–8 步（agent 藏头草案）：agent 默认已配置（opencode-go / deepseek-v4.1-flash），
-  生成草案、勾选提交，然后用三行消息测试；把 `AGENT_API_KEY` 显式设为空可禁用 agent，
-  改用手工新增 `view = acrostic` 的规则。
+- 第 7–8 步（agent 藏头草案）：先按 [`docs/密钥管理.md`](docs/密钥管理.md) 注入
+  `AGENT_API_KEY`（模型默认 opencode-go / deepseek-v4.1-flash），生成草案、勾选提交，
+  然后用三行消息测试；不注入或显式置空 key 即禁用 agent，改用手工新增
+  `view = acrostic` 的规则。
 - 第 9 步（试跑）：试跑面板里贴正常聊天 + 广告，只命中广告，且不产生消息/判定。
 - 第 10 步（软删除 + 同名重建）：玩家列表里删除 alice 再创建 alice，计数从 0 开始，
   旧判定仍留在库里（重启后全局流仍能回看）。

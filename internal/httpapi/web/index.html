@@ -553,18 +553,48 @@ function handle(msg) {
 
     case "draft.started":
       // 模型往返要十几秒：先进入“运行中”状态并每秒刷新已等待时长。
+      // requestId 用来丢弃已取消请求的迟到事件，避免覆盖新请求的状态。
+      if (msg.requestId && state.agentRun && state.agentRun.requestId
+          && msg.requestId !== state.agentRun.requestId) break;
       state.agentRun = {
         startedAt: Date.parse(msg.startedAt) || Date.now(),
         instruction: msg.instruction || "",
         includeSamples: !!msg.includeSamples,
         model: msg.model || state.agentModel,
+        requestId: msg.requestId || "",
       };
       state.agentError = "";
       renderAgent();
       break;
 
+    case "draft.busy":
+      // 服务端已有一次生成在途：它没有再次调用模型。把界面恢复到那次请求上。
+      state.agentRun = {
+        startedAt: Date.parse(msg.startedAt) || Date.now(),
+        instruction: msg.instruction || "",
+        includeSamples: !!msg.includeSamples,
+        model: msg.model || state.agentModel,
+        requestId: msg.requestId || "",
+      };
+      state.agentError = "";
+      renderAgent();
+      toast(`服务端已有一次生成在进行（已等待 ${Math.round((msg.elapsedMs || 0) / 1000)}s），没有重复调用模型`, true);
+      break;
+
+    case "draft.cancelled":
+      if (msg.requestId && state.agentRun && state.agentRun.requestId
+          && msg.requestId !== state.agentRun.requestId) break;
+      state.agentRun = null;
+      state.agentError = "";
+      renderAgent();
+      toast(msg.note || "已取消等待");
+      break;
+
     case "draft": {
       const run = state.agentRun;
+      const requestId = msg.requestId || "";
+      // 已经取消的旧请求迟到的结果：不要覆盖当前这条请求的运行态。
+      if (requestId && run && run.requestId && requestId !== run.requestId) break;
       const count = ((msg.draft && msg.draft.operations) || []).length;
       state.agentRun = null;
       state.agentError = "";
@@ -613,6 +643,9 @@ function handle(msg) {
     case "error":
       toast(msg.message, true);
       if (msg.source === "draft") {
+        // 已取消的旧请求迟到的错误：不要清掉/覆盖当前这条请求的状态。
+        if (msg.requestId && state.agentRun && state.agentRun.requestId
+            && msg.requestId !== state.agentRun.requestId) break;
         // agent 链路的错误不消失：停在 agent 区的状态行上，方便对照下面的请求/响应日志。
         state.agentRun = null;
         state.agentError = msg.message;
@@ -1657,18 +1690,29 @@ $("rule-cancel").addEventListener("click", resetRuleForm);
 $("mapping-save").addEventListener("click", saveMapping);
 $("mapping-cancel").addEventListener("click", resetMappingForm);
 
-// 一次往返的等待上限：服务端 HTTP 超时是 180 秒，超过这个时间还没回包，
+// 一次往返的等待上限：服务端也有 150 秒硬超时，超过这个时间还没回包，
 // 界面自己也要能脱身，否则按钮会一直停在“生成中…”再也发不出请求。
 const AGENT_WAIT_LIMIT_MS = 150000;
+
+let draftRequestSeq = 0;
+function newDraftRequestId() {
+  draftRequestSeq += 1;
+  return "draft-" + Date.now().toString(36) + "-" + draftRequestSeq.toString(36);
+}
 
 function runningTooLong(run) {
   return !!run && Date.now() - run.startedAt > AGENT_WAIT_LIMIT_MS;
 }
 
-function cancelDraftRun(note) {
+// 本地放弃等待时必须同时通知服务端取消：只清前端状态的话，模型请求还在跑，
+// 第二次点击会再花一次钱。服务端会取消在途 HTTP 请求并释放“进行中”闸门。
+function cancelDraftRun(note, notifyServer = true) {
   if (!state.agentRun) return;
+  if (notifyServer && state.ws && state.ws.readyState === WebSocket.OPEN) {
+    send({ type: "draft.cancel", requestId: state.agentRun.requestId || "" });
+  }
   state.agentRun = null;
-  state.agentError = note || "已取消等待（服务端若最后返回，结果仍会显示）";
+  state.agentError = note || "已取消等待（服务端已中止在途模型请求）";
   renderAgent();
 }
 
@@ -1678,14 +1722,15 @@ function startDraft() {
     toast(`上一次生成还没返回（已等待 ${secs}s）：可以等它返回，或点“取消等待”后重新发送`, true);
     return;
   }
-  if (state.agentRun) cancelDraftRun("等待超过 150 秒，已放弃等待上一次生成；可以重新发送");
+  if (state.agentRun) cancelDraftRun("等待超过 150 秒，已中止上一次生成；可以重新发送");
   const instruction = $("agent-instruction").value.trim();
   if (!instruction) { toast("先写清楚要让 agent 做什么", true); return; }
   const includeSamples = $("agent-samples").checked;
-  if (!send({ type: "draft.request", instruction, includeSamples })) return;
+  const requestId = newDraftRequestId();
+  if (!send({ type: "draft.request", instruction, includeSamples, requestId })) return;
   // 先自己进入运行态（服务端的 draft.started 到达后会校对开始时间），
   // 否则请求发出的那一刻按钮就恢复可点，看起来像什么都没发生。
-  state.agentRun = { startedAt: Date.now(), instruction, includeSamples, model: state.agentModel };
+  state.agentRun = { startedAt: Date.now(), instruction, includeSamples, model: state.agentModel, requestId };
   state.agentError = "";
   state.agentResult = null;
   renderAgent();
@@ -1693,7 +1738,7 @@ function startDraft() {
 
 $("agent-btn").addEventListener("click", startDraft);
 $("agent-cancel").addEventListener("click", () => {
-  cancelDraftRun("已取消等待（服务端若最后返回，结果仍会显示）");
+  cancelDraftRun("已取消等待：已请求服务端中止模型请求，可以重新发送");
   toast("已取消等待，可以重新发送请求");
 });
 
@@ -1733,8 +1778,8 @@ setInterval(() => {
 setInterval(() => {
   if (!state.agentRun) return;
   if (runningTooLong(state.agentRun)) {
-    cancelDraftRun("等待超过 150 秒仍未返回（可能网络或中转站卡住），已放弃等待；可以重新发送");
-    toast("上一次生成等待超时，已放弃等待，请重新发送", true);
+    cancelDraftRun("等待超过 150 秒仍未返回，已中止并放弃等待；可以重新发送");
+    toast("上一次生成等待超时，已中止，请重新发送", true);
     return;
   }
   renderAgent();

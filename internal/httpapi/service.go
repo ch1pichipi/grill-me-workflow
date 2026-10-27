@@ -192,6 +192,11 @@ type Service struct {
 	// agent 往返日志（只用于排障）：最新的在最后一条。
 	logMu    sync.Mutex
 	agentLog []drafter.Exchange
+
+	// draftGate 是进程级单飞：同一时刻只允许一次模型往返。
+	// 会话级还有一层“进行中”保护（ws.go 的 draftRun），这里是跨连接/重连的
+	// 最后一道防线，避免两个页面或取消/重发竞态重复花钱。
+	draftGate chan struct{}
 }
 
 // agentLogLimit 是在内存里保留的 agent 往返记录条数。
@@ -203,10 +208,11 @@ func NewService(st *store.Store, d drafter.Drafter, now func() time.Time) (*Serv
 		now = time.Now
 	}
 	s := &Service{
-		st:      st,
-		drafter: d,
-		now:     now,
-		timers:  make(map[int64]*time.Timer),
+		st:        st,
+		drafter:   d,
+		now:       now,
+		timers:    make(map[int64]*time.Timer),
+		draftGate: make(chan struct{}, 1),
 	}
 
 	n, err := st.CountRevisions()
@@ -944,6 +950,17 @@ func (s *Service) Draft(ctx context.Context, instruction string, includeSamples 
 	instruction = strings.TrimSpace(instruction)
 	if instruction == "" {
 		return nil, fmt.Errorf("请先说明你想让 agent 做什么")
+	}
+
+	// 单飞：取消后立即重发可能与上一条请求的收尾重叠，给它几秒钟让出闸门，
+	// 但不会对同一个用户请求反复调用模型。
+	select {
+	case s.draftGate <- struct{}{}:
+		defer func() { <-s.draftGate }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(3 * time.Second):
+		return nil, fmt.Errorf("已有一次草案生成正在进行，请等它返回或先取消")
 	}
 
 	var samples []drafter.Sample

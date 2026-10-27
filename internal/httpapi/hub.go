@@ -40,7 +40,7 @@ func (h *Hub) Broadcast(v any) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.conns {
-		s.enqueue(data)
+		s.enqueueBroadcast(data)
 	}
 }
 
@@ -49,6 +49,6 @@ func (h *Hub) Enqueue(data []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.conns {
-		s.enqueue(data)
+		s.enqueueBroadcast(data)
 	}
 }

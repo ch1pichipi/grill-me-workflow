@@ -17,8 +17,8 @@ import (
 //
 //	ADDR          监听地址（默认 :8043）
 //	DB_PATH       SQLite 文件路径（默认 chatmod.db）
-//	AGENT_BASE_URL / AGENT_API_KEY / AGENT_MODEL  agent 中转站配置（有默认值）
-//	AGENT_API_KEY 显式设为空时禁用 agent，其余功能完全可用
+//	AGENT_BASE_URL / AGENT_API_KEY / AGENT_MODEL  agent 中转站配置；key 必须由环境变量注入，无内置默认值
+//	AGENT_API_KEY 未设置或显式设为空时禁用 agent，其余功能完全可用
 func Run() error {
 	addr := envOr("ADDR", ":8043")
 	dbPath := envOr("DB_PATH", "chatmod.db")

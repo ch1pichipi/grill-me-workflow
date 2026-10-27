@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -182,6 +183,24 @@ func TestNewAgentFromEnv(t *testing.T) {
 	t.Setenv("AGENT_API_KEY", "")
 	if NewAgentFromEnv().Enabled() {
 		t.Fatal("显式置空 AGENT_API_KEY 应禁用 agent")
+	}
+}
+
+// 仓库里不得有任何内置 key：未注入 AGENT_API_KEY 时必须保持禁用。
+func TestNewAgentFromEnvHasNoBuiltInKey(t *testing.T) {
+	prev, ok := os.LookupEnv("AGENT_API_KEY")
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv("AGENT_API_KEY", prev)
+			return
+		}
+		_ = os.Unsetenv("AGENT_API_KEY")
+	})
+	if err := os.Unsetenv("AGENT_API_KEY"); err != nil {
+		t.Fatalf("清理环境变量失败: %v", err)
+	}
+	if NewAgentFromEnv().Enabled() {
+		t.Fatal("未注入 AGENT_API_KEY 时 agent 必须禁用（不允许内置默认 key）")
 	}
 }
 
