@@ -145,5 +145,42 @@ node scripts/loadtest-chatmod.mjs --players=10 --messages=20 --base=http://127.0
 **服务端单条处理耗时**（`result.judgeMs`，不含排队与网络）和**端到端往返**分开报
 （p50/p95/p99/max）。明细写入 `loadtest-chatmod-<时间>.json`。
 
+### agent 异步 / 单飞 / 取消验证
+
+`scripts/loadtest-agent-async.mjs` 自带一个 OpenAI 兼容的 mock 模型，**不花真实额度**，
+会自动编译临时二进制、用临时 SQLite 起服务，然后断言：
+
+1. 模型 5 秒往返期间，同一连接上的 20 条聊天不被阻塞；
+2. 模型返回前再发 `draft.request` 只收到 `draft.busy`，模型调用次数不增加；
+3. `draft.cancel` 真的中止服务端 HTTP 请求，取消后可以立即重发；
+4. N 个玩家并发发消息，自己的 `result` 一条不丢、不超时。
+
+```bash
+node scripts/loadtest-agent-async.mjs
+node scripts/loadtest-agent-async.mjs --players=12 --messages=30 --delay=3000
+```
+
+常用参数：`--delay`（mock 往返毫秒）、`--players`、`--messages`、
+`--chat-p95` / `--chat-max`（阶段 1 阈值）、`--stress-p95` / `--stress-max`（阶段 4 阈值）。
+任一条不满足会以非零码退出并打印服务端日志。
+
+### 真实 agent 验证
+
+`scripts/verify-real-agent.mjs` 不使用 mock，会从本机
+`C:\Users\xuzongqi\.pi\agent\models.json`（或 `--models` 指定）读取 key，
+自动起临时服务并产生约 **3 次真实模型调用**：
+
+```bash
+node scripts/verify-real-agent.mjs
+
+# 也可以连一个已经启动、已注入 AGENT_API_KEY 的服务：
+node scripts/verify-real-agent.mjs --base=http://127.0.0.1:8043
+```
+
+断言与 mock 脚本一致：真实模型往返期间聊天不被阻塞、第二次 `draft.request` 只回
+`draft.busy` 且没有第二次模型调用、`draft.cancel` 会中止真实 HTTP 请求、取消后可立即重发、
+并发聊天 result 不丢。脚本会打印每次真实往返的耗时与返回建议数；失败时以非零码退出并
+打印服务端最后 80 行日志。
+
 对照组 `pi-chat-content-moderation-system` 的等价脚本是该仓库的
 `scripts/loadtest-pi-chat.mjs`，字段命名与本脚本一致，便于并排看。
