@@ -62,6 +62,11 @@ async function connect(retries = 5) {
   throw lastErr;
 }
 
+// 玩家状态事件的流量。这是“每条消息都全量重算并广播玩家列表”最直接的证据：
+// 全量 players 的帧数/字节数应当只在建删改玩家时增长，与消息数无关；
+// 增量的字节数应当与玩家数无关。
+const playersTraffic = { fullFrames: 0, fullBytes: 0, deltaFrames: 0, deltaBytes: 0 };
+
 function connectOnce() {
   const url = cfg.base.replace(/^http/, "ws") + "/ws";
   return new Promise((resolve, reject) => {
@@ -75,6 +80,13 @@ function connectOnce() {
         msg = JSON.parse(ev.data);
       } catch {
         return;
+      }
+      if (msg.type === "players") {
+        playersTraffic.fullFrames++;
+        playersTraffic.fullBytes += Buffer.byteLength(ev.data);
+      } else if (msg.type === "players.changed") {
+        playersTraffic.deltaFrames++;
+        playersTraffic.deltaBytes += Buffer.byteLength(ev.data);
       }
       for (let i = 0; i < waiters.length; i++) {
         if (waiters[i].pred(msg)) {
@@ -180,6 +192,7 @@ async function main() {
   console.log(`玩家：${chosen.map((p) => `${p.id}:${p.name}`).join("、")}`);
 
   // 2) 每个玩家一条独立 WebSocket（模拟 10 个真实用户并发，而不是一个人连点）
+  const trafficBefore = { ...playersTraffic };
   const startedAt = Date.now();
   const perPlayer = await Promise.all(
     chosen.map(async (player, pi) => {
@@ -267,6 +280,24 @@ async function main() {
       serverProcessingMs: stats(all.map((r) => r.serverMs)),
       clientRoundTripMs: stats(all.map((r) => r.rttMs)),
     },
+    playersTraffic: (() => {
+      const fullFrames = playersTraffic.fullFrames - trafficBefore.fullFrames;
+      const fullBytes = playersTraffic.fullBytes - trafficBefore.fullBytes;
+      const deltaFrames = playersTraffic.deltaFrames - trafficBefore.deltaFrames;
+      const deltaBytes = playersTraffic.deltaBytes - trafficBefore.deltaBytes;
+      const conns = Math.max(1, chosen.length);
+      return {
+        connections: conns,
+        // 广播是一次发给所有连接的：下面统一折算成“每条连接收到多少”，
+        // 否则同一个事件会被按连接数重复计数。
+        fullFramesPerConn: +(fullFrames / conns).toFixed(1),
+        fullBytesPerConn: Math.round(fullBytes / conns),
+        deltaFramesPerConn: +(deltaFrames / conns).toFixed(1),
+        deltaBytesPerConn: Math.round(deltaBytes / conns),
+        // 每条已发消息、每个连接平均收到的玩家状态字节数。它必须与玩家数无关。
+        bytesPerMessagePerConn: sent ? Math.round((fullBytes + deltaBytes) / conns / sent) : 0,
+      };
+    })(),
     perPlayer: perPlayer.map((p) => ({
       id: p.id,
       name: p.name,
@@ -285,6 +316,15 @@ async function main() {
   console.log(`  总耗时 ${(wallMs / 1000).toFixed(3)}s · 吞吐 ${result.throughputMsgPerSec} 条/秒`);
   console.log("  " + L("服务端判定", result.latency.serverProcessingMs));
   console.log("  " + L("端到端往返", result.latency.clientRoundTripMs));
+  const pt = result.playersTraffic;
+  console.log(
+    `  玩家状态事件/连接 · 全量 ${pt.fullFramesPerConn} 份（${(pt.fullBytesPerConn / 1024).toFixed(1)} KB）· ` +
+      `增量 ${pt.deltaFramesPerConn} 份（${(pt.deltaBytesPerConn / 1024).toFixed(1)} KB）`
+  );
+  console.log(`  每消息玩家状态流量 ${pt.bytesPerMessagePerConn} 字节/连接（应与玩家数无关）`);
+  if (pt.bytesPerMessagePerConn > 4096) {
+    console.log(`  ⚠ 玩家状态流量偏大：检查是不是又在对每条消息重算并广播整份玩家列表。`);
+  }
   if (result.totals.rejected > 0) {
     console.log(`  拒绝原因样例：${[...new Set(rejected.map((r) => r.rejectReason).filter(Boolean))].join("；")}`);
   }

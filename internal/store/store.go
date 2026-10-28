@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite" // 纯 Go 实现，无 CGO
 )
@@ -18,7 +19,18 @@ var schemaSQL string
 // 顺带避免 SQLite 的写锁竞争。
 type Store struct {
 	db *sql.DB
+
+	// queries 统计“读玩家状态”类查询的条数（含批量读）。
+	// 它不对外做监控，只为测试钉住一条不变量：单条消息的成本不随玩家数增长（ADR 0004）。
+	queries atomic.Int64
 }
+
+// QueryCount 返回累计的玩家状态读查询条数，仅供测试断言复杂度。
+func (s *Store) QueryCount() int64 { return s.queries.Load() }
+
+// countQuery 记录一次玩家状态读查询。批量读也记一条：关注的是
+// “条数是否随玩家数增长”，而不是“总共省了多少次往返”。
+func (s *Store) countQuery() { s.queries.Add(1) }
 
 // Open 打开（必要时创建）数据库并确保表结构存在。
 func Open(path string) (*Store, error) {

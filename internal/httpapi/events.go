@@ -20,6 +20,14 @@ type playersEvent struct {
 	Players []PlayerView `json:"players"`
 }
 
+// playersChangedEvent 只带发生变动的那几行，客户端按 id 合并。
+// 消息热路径只发它：一条消息不该让每个客户端重收一份完整玩家列表（ADR 0004）。
+// 它不带删除语义——玩家增删改仍然走整份 players。
+type playersChangedEvent struct {
+	Type    string       `json:"type"`
+	Players []PlayerView `json:"players"`
+}
+
 type muteEvent struct {
 	Type      string      `json:"type"`
 	PlayerID  int64       `json:"playerId"`

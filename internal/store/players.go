@@ -77,6 +77,7 @@ func (s *Store) Player(id int64) (Player, bool, error) {
 
 // Players 列出未删除玩家。
 func (s *Store) Players() ([]Player, error) {
+	s.countQuery()
 	rows, err := s.db.Query(
 		`SELECT id, name, created_at, deleted_at FROM players WHERE deleted_at IS NULL ORDER BY id`,
 	)

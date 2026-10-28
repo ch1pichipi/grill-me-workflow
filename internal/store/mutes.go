@@ -8,6 +8,7 @@ import (
 // ActiveMute 返回玩家当前活跃的禁言（ended_at IS NULL）。至多一条。
 // 到期与否由调用方按惰性判定比较时间，这里不隐式修改数据。
 func (s *Store) ActiveMute(playerID int64) (*Mute, error) {
+	s.countQuery()
 	row := s.db.QueryRow(
 		`SELECT id, player_id, started_at, expires_at, ended_at, COALESCE(end_reason,''), COALESCE(lift_note,'')
 		 FROM mutes WHERE player_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
@@ -25,6 +26,7 @@ func (s *Store) ActiveMute(playerID int64) (*Mute, error) {
 
 // ActiveMutes 返回全部活跃禁言，启动时用于恢复到期推送的定时器。
 func (s *Store) ActiveMutes() ([]Mute, error) {
+	s.countQuery()
 	rows, err := s.db.Query(
 		`SELECT id, player_id, started_at, expires_at, ended_at, COALESCE(end_reason,''), COALESCE(lift_note,'')
 		 FROM mutes WHERE ended_at IS NULL ORDER BY id`,

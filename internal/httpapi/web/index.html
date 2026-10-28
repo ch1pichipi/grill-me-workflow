@@ -501,6 +501,17 @@ function handle(msg) {
       renderDryRunSource();
       break;
 
+    case "players.changed":
+      // 只增量：消息热路径只推变动的那一行，客户端按 id 合并。
+      // 整份替换只在建/改/删玩家与重连 bootstrap 时发生。
+      for (const row of msg.players || []) {
+        const i = state.players.findIndex((p) => p.id === row.id);
+        if (i >= 0) state.players[i] = row;
+        else state.players.push(row);
+      }
+      renderPlayers();
+      break;
+
     case "players":
       state.players = msg.players || [];
       if (!state.players.some((p) => p.id === state.playerId)) {

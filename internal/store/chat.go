@@ -37,6 +37,7 @@ func (s *Store) InsertJudgment(j Judgment, at time.Time) (int64, error) {
 // CountViolationsSince 现算滚动窗口内的违规次数（只统计 is_violation）。
 // 7 天计数不存冗余列：违规历史只有一个事实来源——判定表（技术选型 §15）。
 func (s *Store) CountViolationsSince(playerID int64, since time.Time) (int, error) {
+	s.countQuery()
 	var n int
 	err := s.db.QueryRow(
 		`SELECT count(*) FROM judgments
@@ -48,6 +49,7 @@ func (s *Store) CountViolationsSince(playerID int64, since time.Time) (int, erro
 
 // CountViolationsLifetime 统计终身违规次数。
 func (s *Store) CountViolationsLifetime(playerID int64) (int, error) {
+	s.countQuery()
 	var n int
 	err := s.db.QueryRow(
 		`SELECT count(*) FROM judgments WHERE player_id = ? AND is_violation = 1`,

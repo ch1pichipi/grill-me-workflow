@@ -28,6 +28,9 @@ const (
 	streamLimit = 200
 	// violationWindow 是滚动 7 天窗口。
 	violationWindow = 7 * 24 * time.Hour
+	// defaultPlayersFlushInterval 是全量玩家列表广播的合并窗口。
+	// 建/删玩家是低频操作，但脚本批量建 500 个玩家时，不合并就是 500 份完整列表（ADR 0004）。
+	defaultPlayersFlushInterval = 100 * time.Millisecond
 )
 
 // Broadcaster 是服务层向所有连接广播事件的窄接口。
@@ -189,6 +192,13 @@ type Service struct {
 	stream []StreamEntry
 	seq    int64
 
+	// 全量玩家列表广播的合并器：playersDirty 在锁内置位，
+	// playersFlush 在窗口到期后于锁内结算。测试用 flushInterval 拉长窗口。
+	playersDirty  bool
+	playersFlush  *time.Timer
+	flushInterval time.Duration
+	closed        bool
+
 	// agent 往返日志（只用于排障）：最新的在最后一条。
 	logMu    sync.Mutex
 	agentLog []drafter.Exchange
@@ -208,11 +218,12 @@ func NewService(st *store.Store, d drafter.Drafter, now func() time.Time) (*Serv
 		now = time.Now
 	}
 	s := &Service{
-		st:        st,
-		drafter:   d,
-		now:       now,
-		timers:    make(map[int64]*time.Timer),
-		draftGate: make(chan struct{}, 1),
+		st:            st,
+		drafter:       d,
+		now:           now,
+		timers:        make(map[int64]*time.Timer),
+		draftGate:     make(chan struct{}, 1),
+		flushInterval: defaultPlayersFlushInterval,
 	}
 
 	n, err := st.CountRevisions()
@@ -251,10 +262,15 @@ func NewService(st *store.Store, d drafter.Drafter, now func() time.Time) (*Serv
 	return s, nil
 }
 
-// Close 停止所有禁言定时器（进程退出或测试用）。
+// Close 停止所有定时器（进程退出或测试用）。
 func (s *Service) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = true
+	if s.playersFlush != nil {
+		s.playersFlush.Stop()
+		s.playersFlush = nil
+	}
 	for id, t := range s.timers {
 		t.Stop()
 		delete(s.timers, id)
@@ -349,7 +365,7 @@ func (s *Service) CreatePlayer(name string) (store.Player, error) {
 	if err != nil {
 		return store.Player{}, err
 	}
-	s.broadcastPlayersLocked()
+	s.markPlayersChangedLocked()
 	return p, nil
 }
 
@@ -364,7 +380,7 @@ func (s *Service) RenamePlayer(id int64, name string) error {
 	if _, err := s.st.RenamePlayer(id, name); err != nil {
 		return err
 	}
-	s.broadcastPlayersLocked()
+	s.markPlayersChangedLocked()
 	return nil
 }
 
@@ -376,7 +392,7 @@ func (s *Service) DeletePlayer(id int64) error {
 		return err
 	}
 	s.cancelTimer(id)
-	s.broadcastPlayersLocked()
+	s.markPlayersChangedLocked()
 	return nil
 }
 
@@ -387,24 +403,50 @@ func (s *Service) Players() ([]PlayerView, error) {
 	return s.playersLocked()
 }
 
+// playersLocked 用 4 条批量查询构造整份列表：查询条数与玩家数无关。
+// 惰性到期仍在这里生效（到期事实要写回数据库并推送），但它只对真正
+// 已过期的那几行付费，而不是对每个人各查一次。
 func (s *Service) playersLocked() ([]PlayerView, error) {
 	ps, err := s.st.Players()
 	if err != nil {
 		return nil, err
 	}
+	mutes, err := s.st.ActiveMutesByPlayer()
+	if err != nil {
+		return nil, err
+	}
 	now := s.now()
+	count7d, err := s.st.ViolationCountsSinceByPlayer(now.Add(-violationWindow))
+	if err != nil {
+		return nil, err
+	}
+	lifetime, err := s.st.ViolationCountsLifetimeByPlayer()
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]PlayerView, 0, len(ps))
 	for _, p := range ps {
-		m, _ := s.resolveMuteLocked(p.ID, now)
-		v := PlayerView{ID: p.ID, Name: p.Name, CreatedAt: p.CreatedAt}
-		if m != nil {
-			v.Mute = muteView(*m, now)
+		v := PlayerView{
+			ID:        p.ID,
+			Name:      p.Name,
+			CreatedAt: p.CreatedAt,
+			Count7d:   count7d[p.ID],
+			Lifetime:  lifetime[p.ID],
 		}
-		if v.Count7d, err = s.st.CountViolationsSince(p.ID, now.Add(-violationWindow)); err != nil {
-			return nil, err
-		}
-		if v.Lifetime, err = s.st.CountViolationsLifetime(p.ID); err != nil {
-			return nil, err
+		if m, ok := mutes[p.ID]; ok {
+			if m.ExpiresAt != nil && !now.Before(*m.ExpiresAt) {
+				// 兜住“进程停摆期间到期”与“测试直接写库”这两类情况：
+				// 定时器正常工作时根本走不到这里。
+				if err := s.st.EndMute(m.ID, store.EndReasonExpired, now, ""); err != nil {
+					log.Printf("结束到期禁言失败: %v", err)
+				} else {
+					s.cancelTimer(p.ID)
+					s.emitMuteEndedLocked(p.ID, store.EndReasonExpired)
+				}
+			} else {
+				v.Mute = muteView(m, now)
+			}
 		}
 		out = append(out, v)
 	}
@@ -418,6 +460,57 @@ func (s *Service) broadcastPlayersLocked() {
 		return
 	}
 	s.emit(playersEvent{Type: "players", Players: views})
+}
+
+// markPlayersChangedLocked 声明“整份玩家列表变了”，并在合并窗口到期后广播一次。
+// 用于建/改/删玩家这类低频、改动集合本身的操作。
+func (s *Service) markPlayersChangedLocked() {
+	if s.closed {
+		return
+	}
+	s.playersDirty = true
+	if s.playersFlush != nil {
+		return
+	}
+	s.playersFlush = time.AfterFunc(s.flushInterval, s.flushPlayers)
+}
+
+// flushPlayers 在锁内重算并广播一次全量列表。
+// 必须仍持锁广播：全量事件在客户端是“整份替换”，一旦与增量事件乱序，
+// 旧的全量会把刚到的增量抹掉（ADR 0004）；hub.Broadcast 只做非阻塞入队，
+// 所以锁内发广播不会把消息热路径拖住。
+func (s *Service) flushPlayers() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.playersFlush = nil
+	if s.closed || !s.playersDirty {
+		return
+	}
+	s.playersDirty = false
+	s.broadcastPlayersLocked()
+}
+
+// playerRowLocked 构造单个玩家的列表行（固定 4 条查询，与玩家数无关）。
+// 用在禁言到期/提前解除这类单玩家事件上：它们不在消息热路径上。
+func (s *Service) playerRowLocked(p store.Player, now time.Time) (PlayerView, error) {
+	m, _ := s.resolveMuteLocked(p.ID, now)
+	v := PlayerView{ID: p.ID, Name: p.Name, CreatedAt: p.CreatedAt}
+	if m != nil {
+		v.Mute = muteView(*m, now)
+	}
+	var err error
+	if v.Count7d, err = s.st.CountViolationsSince(p.ID, now.Add(-violationWindow)); err != nil {
+		return PlayerView{}, err
+	}
+	if v.Lifetime, err = s.st.CountViolationsLifetime(p.ID); err != nil {
+		return PlayerView{}, err
+	}
+	return v, nil
+}
+
+// emitPlayerChangedLocked 只广播变动的那一行，客户端按 id 合并。
+func (s *Service) emitPlayerChangedLocked(v PlayerView) {
+	s.emit(playersChangedEvent{Type: "players.changed", Players: []PlayerView{v}})
 }
 
 // ---------- 禁言状态机 ----------
@@ -504,7 +597,16 @@ func (s *Service) expireMute(playerID int64) {
 	}
 	s.cancelTimer(playerID)
 	s.emitMuteEndedLocked(playerID, store.EndReasonExpired)
-	s.broadcastPlayersLocked()
+	// 被软删除的玩家已经不在列表里，不必再推一行。
+	p, ok, err := s.st.Player(playerID)
+	if err != nil || !ok || p.DeletedAt != nil {
+		return
+	}
+	if v, err := s.playerRowLocked(p, now); err != nil {
+		log.Printf("读取玩家行失败: %v", err)
+	} else {
+		s.emitPlayerChangedLocked(v)
+	}
 }
 
 func (s *Service) restoreMutes() {
@@ -566,7 +668,11 @@ func (s *Service) Lift(playerID int64, reason string) error {
 	s.appendStreamLocked(entry)
 	s.emit(streamEvent{Type: "stream", Entry: entry})
 	s.emitMuteEndedLocked(playerID, store.EndReasonLifted)
-	s.broadcastPlayersLocked()
+	if v, err := s.playerRowLocked(p, now); err != nil {
+		log.Printf("读取玩家行失败: %v", err)
+	} else {
+		s.emitPlayerChangedLocked(v)
+	}
 	return nil
 }
 
@@ -599,8 +705,9 @@ func (s *Service) Send(playerID int64, rawText string) (res SendResult, err erro
 
 	mute, ended := s.resolveMuteLocked(playerID, now)
 	if ended {
+		// 到期事实由 mute 事件送达；这一行的新状态随末尾的 players.changed 一起发，
+		// 不必在这里重算整份列表。
 		s.emitMuteEndedLocked(playerID, store.EndReasonExpired)
-		s.broadcastPlayersLocked()
 	}
 	if mute != nil {
 		// 禁言期间的消息不入库、不产生判定、不发送。
@@ -719,7 +826,16 @@ func (s *Service) Send(playerID int64, rawText string) (res SendResult, err erro
 
 	s.appendStreamLocked(entry)
 	s.emit(streamEvent{Type: "stream", Entry: entry})
-	s.broadcastPlayersLocked()
+	// 只广播变动的那一行：它的四个数字（禁言 + 两个计数）刚好是判定时
+	// 已经算好的输入，因此这里零额外查询。
+	s.emitPlayerChangedLocked(PlayerView{
+		ID:        p.ID,
+		Name:      p.Name,
+		CreatedAt: p.CreatedAt,
+		Mute:      entry.MuteStarted,
+		Count7d:   entry.Count7d,
+		Lifetime:  entry.Lifetime,
+	})
 
 	return SendResult{Entry: entry, Verdict: verdict}, nil
 }
